@@ -1,0 +1,14 @@
+[
+    {
+        "bbox": {"x0": -200, "z0": -150, "x1": -160, "z1": -110},
+        "metadata": {"type": "building", "area_m2": 1600, "stories_hint": 3}
+    },
+    {
+        "bbox": {"x0": -100, "z0": -80, "x1": -50, "z1": -40},
+        "metadata": {"type": "building", "area_m2": 2000, "stories_hint": 2, "roof_color": [0.85, 0.82, 0.78]}
+    },
+    {
+        "bbox": {"x0": 50, "z0": 100, "x1": 120, "z1": 170},
+        "metadata": {"type": "iglesia", "area_m2": 4900}
+    }
+]

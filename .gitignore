@@ -1,0 +1,43 @@
+# Binarios y compilados
+street_vulkan
+build/
+*.o
+*.so
+*.a
+*.exe
+*.out
+
+# Shaders compilados SPIR-V
+shaders/*.spv
+
+# Archivos de caché y datasets pesados (>50MB)
+models/*.glb
+models/*.obj
+models/*.zip
+models/tile_cache/
+models/gemini_cache/
+models/gemini_texture_cache/
+models/overture_buildings.geojson*
+models/osm_cache.xml
+models/conjunto_de_datos/
+models/diccionario_de_datos/
+
+# Python y entorno
+__pycache__/
+*.pyc
+*.pyo
+tools/__pycache__/
+tools/.env
+.env
+venv/
+env/
+
+# Sistema operativo e IDEs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Archivos de diagnóstico y temporales
+*.txt
+

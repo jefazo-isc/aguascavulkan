@@ -1,0 +1,27 @@
+{
+    "image": "assets/satellite.png",
+    "bbox": {
+        "x0": -200,
+        "z0": -150,
+        "x1": -160,
+        "z1": -110
+    },
+    "metadata": {
+        "type": "building",
+        "area_m2": 1600,
+        "stories_hint": 3,
+        "roof_color": [0.78, 0.72, 0.65],
+        "neighborhood": "Centro, Aguascalientes",
+        "osm_tags": {
+            "building": "commercial",
+            "building:levels": "3"
+        }
+    },
+    "map_bounds": {
+        "x0": -1700,
+        "z0": -1600,
+        "x1": 1700,
+        "z1": 1600
+    },
+    "output": "models/generated/test_building.obj"
+}

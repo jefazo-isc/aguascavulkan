@@ -1,0 +1,10 @@
+{
+  "service": "GoogleStreetView",
+  "pano_id": "qtA035vd6-ckOZT7rYsxdA",
+  "lat": 21.88072468717257,
+  "lon": -102.2965102516379,
+  "heading": 0.0,
+  "file_path": "assets/streetview/gsv_qtA035vd6-ckOZT7rYsxdA_z1.jpg",
+  "width": 1024,
+  "height": 512
+}
