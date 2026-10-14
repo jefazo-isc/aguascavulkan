@@ -101,13 +101,15 @@ def main():
     node_id_to_idx = {nid: i for i, nid in enumerate(sorted(graph_nodes_set))}
     idx_to_node_id = {i: nid for nid, i in node_id_to_idx.items()}
 
-    # Inicializar terreno DEM
-    min_lat = min(lat for lat, lon in nodes_geo.values())
-    max_lat = max(lat for lat, lon in nodes_geo.values())
-    min_lon = min(lon for lat, lon in nodes_geo.values())
-    max_lon = max(lon for lat, lon in nodes_geo.values())
+    # Inicializar terreno DEM con las mismas cotas que el sector y el shader Vulkan
+    # Bounding box del sector: min_lat=21.8690, max_lat=21.8940, min_lon=-102.3110, max_lon=-102.2815
+    min_lat = 21.8690
+    max_lat = 21.8940
+    min_lon = -102.3110
+    max_lon = -102.2815
 
     terrain = TerrainElevation(min_lat, max_lat, min_lon, max_lon, nx=40, ny=40)
+    ROAD_SURFACE_OFFSET = 0.20  # Elevar sobre el asfalto (asfalto=0.12m + radio de rueda)
 
     # Cargar traffic_signals.json si existe para mapear signal_groups
     signals_json = "models/traffic_signals.json"
@@ -138,7 +140,7 @@ def main():
         nid = idx_to_node_id[i]
         lat, lon = nodes_geo[nid]
         x, z = geo_to_meters(lat, lon)
-        y = terrain.get_ground_elevation(x, z)
+        y = terrain.get_ground_elevation(x, z) + ROAD_SURFACE_OFFSET
         
         has_signal = nid in signal_nodes
         sg = find_signal_group(x, z) if has_signal else -1
@@ -187,7 +189,7 @@ def main():
                     pts_3d = []
                     for lat, lon in curr_pts:
                         px, pz = geo_to_meters(lat, lon)
-                        py = terrain.get_ground_elevation(px, pz)
+                        py = terrain.get_ground_elevation(px, pz) + ROAD_SURFACE_OFFSET
                         pts_3d.append((px, py, pz))
 
                     raw_edges.append({

@@ -63,3 +63,12 @@ python3 tools/generate_sector.py
 - `tools/`: Generadores procedurales y scripts de visión artificial en Python.
 - `assets/`: Recursos gráficos y atlas de texturas.
 - `models/`: Mallas y cachés locales.
+- `docs/`: Documentación técnica, roadmaps y estándares de calidad ([ISO/IEC 25010](file:///home/yahir/vulkan/docs/ISO_IEC_25010.md), [ISO/IEC 25023](file:///home/yahir/vulkan/docs/ISO_IEC_25023.md)).
+
+---
+
+## 📋 Estándares de Calidad
+
+El proyecto se rige bajo la familia de normas internacionales **ISO/IEC SQuaRE**:
+- **[ISO/IEC 25010](file:///home/yahir/vulkan/docs/ISO_IEC_25010.md)**: Modelo de calidad del producto de software (evaluación de las 8 características: Adecuación Funcional, Eficiencia de Desempeño, Compatibilidad, Usabilidad, Fiabilidad, Seguridad, Mantenibilidad y Portabilidad).
+- **[ISO/IEC 25023](file:///home/yahir/vulkan/docs/ISO_IEC_25023.md)**: Medición cuantitativa de la calidad (catálogo de 24 métricas objetivas, fórmulas matemáticas, métodos de medición y scorecard de cumplimiento).
