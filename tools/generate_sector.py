@@ -23,7 +23,7 @@ if tools_dir not in sys.path:
     sys.path.insert(0, tools_dir)
 
 # Módulos del motor procedural
-from geo_dem import geo_to_meters, TerrainElevation, MeshElevationGrid
+from geo_dem import geo_to_meters, TerrainElevation, MeshElevationGrid, M_PER_LAT, get_meters_per_lon
 from osm_extractor import fetch_osm_data, parse_osm_data
 from cv_patch_analyzer import SatellitePatchAnalyzer
 from open_buildings_fetcher import merge_and_densify_buildings
@@ -348,8 +348,8 @@ def generate_sector():
         z1 = (sec_z + 1) * macro_size
 
         # Bounding box en coordenadas geográficas aproximadas (+Z apunta al Sur)
-        meters_per_deg_lat = 111139.0
-        meters_per_deg_lon = 111139.0 * math.cos(math.radians(origin_lat))
+        meters_per_deg_lat = M_PER_LAT
+        meters_per_deg_lon = get_meters_per_lon(origin_lat)
         min_lat = origin_lat - (z1 + 80.0) / meters_per_deg_lat
         max_lat = origin_lat - (z0 - 80.0) / meters_per_deg_lat
         min_lon = origin_lon + (x0 - 80.0) / meters_per_deg_lon
@@ -520,18 +520,6 @@ def generate_sector():
     del traffic_verts
     gc.collect()
 
-    print("[Malla Props] Colocando props urbanos (señales de alto, hidrantes, barandales)...")
-    props_verts = generate_street_props(
-        intersections, traffic_signals, processed_highways,
-        civil_bridges, pedestrian_bridges,
-        origin_lat=origin_lat, origin_lon=origin_lon,
-        x0=x0, z0=z0, x1=x1, z1=z1,
-        mesh_grid=mesh_grid, trench_spatial=trench_spatial
-    )
-    mesh_builder.add_vertices(props_verts)
-    del props_verts
-    gc.collect()
-
     # ── Anuncios Elevados Corporativos ROLCAR (Refaccionaria Rogelio) ──
     rolcar_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "rolcar_aguascalientes.json")
     if os.path.exists(rolcar_path):
@@ -617,6 +605,19 @@ def generate_sector():
         removed_b = before_b - len(all_buildings)
         if removed_b:
             print(f"[Edificios] Excluidos {removed_b} edificios superpuestos sobre pasos a desnivel.")
+
+    print("[Malla Props] Colocando props urbanos (señales de alto, hidrantes, mallas ciclónicas, barandales)...")
+    props_verts = generate_street_props(
+        intersections, traffic_signals, processed_highways,
+        civil_bridges, pedestrian_bridges,
+        all_buildings=all_buildings,
+        origin_lat=origin_lat, origin_lon=origin_lon,
+        x0=x0, z0=z0, x1=x1, z1=z1,
+        mesh_grid=mesh_grid, trench_spatial=trench_spatial
+    )
+    mesh_builder.add_vertices(props_verts)
+    del props_verts
+    gc.collect()
 
     # Placas de nomenclatura en esquinas reales de edificios
     corner_signs = generate_corner_signs_on_facades(

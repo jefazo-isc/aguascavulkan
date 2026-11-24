@@ -145,7 +145,6 @@ def parse_osm_data(xml_data):
     nodes = {}
     traffic_signals = []
     crossings = []
-    bus_stops = []
     trees = []
     buildings = []
     highways = []
@@ -168,8 +167,6 @@ def parse_osm_data(xml_data):
                 traffic_signals.append((lat, lon, tags, nid))
             elif tags.get('highway') == 'crossing':
                 crossings.append((lat, lon, tags, nid))
-            elif tags.get('highway') in ('bus_stop', 'platform') or tags.get('amenity') == 'bus_station':
-                bus_stops.append((lat, lon, tags, nid))
             elif tags.get('natural') == 'tree':
                 trees.append((lat, lon, tags, nid))
             elem.clear()

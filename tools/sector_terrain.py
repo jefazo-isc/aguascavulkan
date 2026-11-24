@@ -389,7 +389,7 @@ def generate_terrain_mesh(
     uv_bounds: Optional[Tuple[float, float, float, float]] = None,
 ) -> List[VertexTuple]:
     """
-    Generates continuous high-definition terrain mesh with adaptive 16x16 subquad
+    Generates continuous high-definition terrain mesh with adaptive 32x32 subquad
     subdivision, cutout around open-trench underpasses, and perimeter antifissure skirt.
     """
     if hasattr(mesh_grid, "cols"):

@@ -695,10 +695,10 @@ def get_ground_elevation(x, z):
     """
     try:
         from geo_dem import TerrainElevation, DEFAULT_ORIGIN_LAT, DEFAULT_ORIGIN_LON
-        terrain = TerrainElevation(21.8690, 21.8940, -102.3110, -102.2815,
-                                   nx=40, ny=40,
+        terrain = TerrainElevation(21.8000, 21.9500, -102.3700, -102.2450,
+                                   nx=64, ny=64,
                                    origin_lat=DEFAULT_ORIGIN_LAT, origin_lon=DEFAULT_ORIGIN_LON)
-        return terrain.get_ground_elevation(x, z)
+        return terrain.get_real_topography(x, z)
     except Exception as e:
         print(f"[DEM] Aviso de elevación: {e}")
         return 0.0
