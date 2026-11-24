@@ -719,10 +719,19 @@ async function main() {
     f32Mem[MEM_SIM_TIME_PTR >> 2] = 0.0;
 
     // 5. Sector Manifest & Streaming Loader (Prioritize Sector 0,0)
-    const sectorCache = new Map(); // sectorKey -> { entry, aabbFloat32, chunkCount }
+    const sectorCache = new Map(); // sectorKey -> { entry, aabbData, chunkCount, cx, cz, lastUsed }
+    const cullFlagsBySector = new Map(); // sectorKey -> Uint8Array(chunkCount)
     const loadingSectors = new Set();
     const missingSectors = new Set();
     let manifestInfo = await resolveSectorManifest();
+
+    function unloadSectorEntry(key) {
+        const secMeta = sectorCache.get(key);
+        if (!secMeta) return;
+        renderer.unloadSector(key);
+        sectorCache.delete(key);
+        cullFlagsBySector.delete(key);
+    }
 
     async function loadSectorEntry(entry, basePrefix, showLoader) {
         const key = `${entry.mx}_${entry.mz}`;
@@ -770,7 +779,18 @@ async function main() {
                 aabbData[i * 6 + 4] = c.max_y;
                 aabbData[i * 6 + 5] = c.max_z;
             }
-            sectorCache.set(key, { entry, aabbData, chunkCount: chunks.length });
+
+            const macroSize = (manifestInfo && manifestInfo.manifest && manifestInfo.manifest.macro_size) || 1024.0;
+            const cx = (entry.mx + 0.5) * macroSize;
+            const cz = (entry.mz + 0.5) * macroSize;
+            sectorCache.set(key, {
+                entry,
+                aabbData,
+                chunkCount: chunks.length,
+                cx,
+                cz,
+                lastUsed: performance.now(),
+            });
         } catch (err) {
             missingSectors.add(key);
             throw err;
@@ -796,6 +816,9 @@ async function main() {
             entry: { mx: 0, mz: 0 },
             aabbData: new Float32Array([c.min_x, c.min_y, c.min_z, c.max_x, c.max_y, c.max_z]),
             chunkCount: 1,
+            cx: 512.0,
+            cz: 512.0,
+            lastUsed: performance.now(),
         });
         showToast('Modo standalone (sin sector_0_0.glb)');
     }
@@ -1030,7 +1053,6 @@ async function main() {
         0, 0, 1, 0,
         0, 0, 0, 1,
     ]);
-    const cullFlagsBySector = new Map();
 
     let lastTimestamp = performance.now();
     let fpsAccum = 0;
@@ -1040,29 +1062,97 @@ async function main() {
     let avgCpuMs = 0.5;
     let streamCheckTimer = 0;
 
+    // LRU Streaming Buffer Configuration
+    // Keeps active macro-sectors in GPU memory while strictly bounding RAM to prevent
+    // out-of-memory crashes on Firefox WebGL2 and Chrome WebGPU.
+    const MAX_ACTIVE_SECTORS = 6;
+    const STREAM_LOAD_RADIUS = 2400.0;
+    const STREAM_UNLOAD_RADIUS = 3800.0;
+    const MAX_CONCURRENT_STREAM_LOADS = 2;
+
     function maybeStreamNearbySectors(camX, camZ) {
-        if (!manifestInfo || manifestInfo.manifest.sectors.length <= 1) return;
-        if (sectorCache.size >= 4 || loadingSectors.size > 0) return;
+        if (!manifestInfo || !manifestInfo.manifest || !Array.isArray(manifestInfo.manifest.sectors)) return;
+        const allSectors = manifestInfo.manifest.sectors;
+        if (allSectors.length <= 1) return;
 
         const macroSize = manifestInfo.manifest.macro_size || 1024.0;
-        const loadRadius = 1500.0;
-        let best = null;
-        let bestDist = Infinity;
 
-        for (const s of manifestInfo.manifest.sectors) {
+        // 1. Unload distant sectors exceeding STREAM_UNLOAD_RADIUS (preserving at least 1 sector)
+        for (const [key, secMeta] of sectorCache.entries()) {
+            if (sectorCache.size <= 1) break;
+            const d = Math.hypot(secMeta.cx - camX, secMeta.cz - camZ);
+            if (d > STREAM_UNLOAD_RADIUS) {
+                unloadSectorEntry(key);
+            }
+        }
+
+        // 2. If cache is full, evict LRU sectors (farthest & least recently used, keeping closest to camera)
+        while (sectorCache.size + loadingSectors.size >= MAX_ACTIVE_SECTORS && sectorCache.size > 1) {
+            let lruKey = null;
+            let oldestTime = Infinity;
+            let maxDist = -Infinity;
+
+            // Find closest sector to never evict the sector the camera is standing in
+            let closestKey = null;
+            let closestDist = Infinity;
+            for (const [key, secMeta] of sectorCache.entries()) {
+                const d = Math.hypot(secMeta.cx - camX, secMeta.cz - camZ);
+                if (d < closestDist) {
+                    closestDist = d;
+                    closestKey = key;
+                }
+            }
+
+            for (const [key, secMeta] of sectorCache.entries()) {
+                if (key === closestKey) continue;
+                const d = Math.hypot(secMeta.cx - camX, secMeta.cz - camZ);
+                const t = secMeta.lastUsed || 0;
+                if (t < oldestTime || (t === oldestTime && d > maxDist)) {
+                    oldestTime = t;
+                    maxDist = d;
+                    lruKey = key;
+                }
+            }
+
+            if (lruKey) {
+                unloadSectorEntry(lruKey);
+            } else {
+                break;
+            }
+        }
+
+        // 3. Discover nearby sectors within STREAM_LOAD_RADIUS
+        if (loadingSectors.size >= MAX_CONCURRENT_STREAM_LOADS) return;
+
+        const candidates = [];
+        for (const s of allSectors) {
             const key = `${s.mx}_${s.mz}`;
             if (sectorCache.has(key) || loadingSectors.has(key) || missingSectors.has(key)) continue;
-            if ((s.vert_count || 0) < 100) continue;
+            if ((s.vert_count || 0) < 10) continue;
+
             const cx = (s.mx + 0.5) * macroSize;
             const cz = (s.mz + 0.5) * macroSize;
             const d = Math.hypot(cx - camX, cz - camZ);
-            if (d < loadRadius && d < bestDist) {
-                bestDist = d;
-                best = s;
+            if (d <= STREAM_LOAD_RADIUS) {
+                candidates.push({ sector: s, dist: d, key });
             }
         }
-        if (best) {
-            loadSectorEntry(best, manifestInfo.basePrefix, false).catch(() => {});
+
+        if (candidates.length === 0) return;
+
+        // Sort candidates so the nearest macro-sector is requested first
+        candidates.sort((a, b) => a.dist - b.dist);
+
+        const availableSlots = Math.min(
+            MAX_CONCURRENT_STREAM_LOADS - loadingSectors.size,
+            MAX_ACTIVE_SECTORS - sectorCache.size
+        );
+
+        for (let i = 0; i < Math.max(1, availableSlots) && i < candidates.length; i++) {
+            const cand = candidates[i];
+            loadSectorEntry(cand.sector, manifestInfo.basePrefix, false).catch((err) => {
+                console.warn(`[Streamer] Falló streaming sector ${cand.key}:`, err.message);
+            });
         }
     }
 
@@ -1151,6 +1241,12 @@ async function main() {
                 }
             } else {
                 flags.fill(1);
+            }
+
+            // Update LRU access recency if camera is close to this sector
+            const dCam = Math.hypot(secMeta.cx - camX, secMeta.cz - camZ);
+            if (dCam < STREAM_LOAD_RADIUS) {
+                secMeta.lastUsed = now;
             }
         }
 
@@ -1242,9 +1338,9 @@ async function main() {
             cullingEnabled: state.cullingEnabled,
         });
 
-        // Background nearby sector streaming check every 1.0s
+        // Background nearby sector streaming check every 0.5s
         streamCheckTimer += dt;
-        if (streamCheckTimer >= 1.0) {
+        if (streamCheckTimer >= 0.5) {
             streamCheckTimer = 0;
             maybeStreamNearbySectors(camX, camZ);
         }
