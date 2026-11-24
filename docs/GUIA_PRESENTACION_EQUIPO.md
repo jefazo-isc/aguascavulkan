@@ -139,6 +139,11 @@ Si están en la computadora del laboratorio o laptop del equipo:
   make clean && make
   ./street_vulkan
   ```
+- **Para generar/regenerar el terreno y sectores 3D:**
+  ```bash
+  # Regenerar el sector 0_0 (Paseo de la Cruz)
+  python3 tools/generate_sector.py --sector 0 0
+  ```
 - **Para demostrar la suite de pruebas al evaluador:**
   ```bash
   make test
@@ -147,3 +152,24 @@ Si están en la computadora del laboratorio o laptop del equipo:
   ```bash
   make metrics
   ```
+
+---
+
+## 🗺️ 8. ¿Cómo Funciona la Generación del Terreno para los Compañeros?
+
+Si tus compañeros quieren generar el terreno por su cuenta en su propia máquina:
+
+1. **Todo el código fuente y cachés DEM satelitales ya están subidos al repositorio:**
+   - [tools/generate_sector.py](file:///home/yahir/vulkan/tools/generate_sector.py) (generador procedural principal).
+   - [tools/geo_dem.py](file:///home/yahir/vulkan/tools/geo_dem.py) (corrección topográfica).
+   - [models/dem_terrarium_*.json](file:///home/yahir/vulkan/models/) (cachés de elevación DEM 30m de Aguascalientes).
+   - [models/sectors/sector_0_0.glb](file:///home/yahir/vulkan/models/sectors/sector_0_0.glb) y [models/sectors/chunks_0_0.json](file:///home/yahir/vulkan/models/sectors/chunks_0_0.json) (sector base precargado).
+   - [models/road_network.bin](file:///home/yahir/vulkan/models/road_network.bin) y catálogos JSON de Rolcar, CFE y semáforos.
+
+2. **Generación Inmediata del Sector Base:**
+   Al clonar el repo, pueden ejecutar directamente:
+   ```bash
+   python3 tools/generate_sector.py --sector 0 0
+   ```
+   *Nota técnica sobre los datos pesados brutos*: Los archivos XML/GeoJSON masivos de OpenStreetMap y Overture (`models/osm_tercer_anillo.xml` y `models/overture_*.geojson`, que pesan más de 200 MB en conjunto) están omitidos en `.gitignore` por las políticas estrictas de GitHub (límite de 100 MB). Para generar otros sectores o descargar nuevos datos crudos, los scripts se conectan automáticamente a las APIs o utilizan la caché incluida en el repositorio.
+
