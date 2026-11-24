@@ -1,6 +1,6 @@
 # 🏙️ StreetVulkan: Gemelo Digital Urbano 3D de Aguascalientes
 
-> **Motor Gráfico de Alto Rendimiento en C11 / Vulkan API 1.2 + SDL2**, con pipeline geoespacial procedural y cliente web universal en el navegador impulsado por **WebAssembly puro en Ensamblador (`.wat` $\to$ `.wasm`)** y **WebGPU (Vulkan) / WebGL2**.
+> **Motor Gráfico en C11 / Vulkan API 1.2 + SDL2**, con pipeline geoespacial procedural y cliente web en el navegador impulsado por **WebAssembly en Ensamblador (`.wat` $\to$ `.wasm`)** y **WebGPU / WebGL2**.
 >
 > 🌐 **Demo en Vivo (GitHub Pages):** [https://jefazo-isc.github.io/aguascavulkan/](https://jefazo-isc.github.io/aguascavulkan/)  
 > 📦 **Repositorio Oficial:** [https://github.com/jefazo-isc/aguascavulkan](https://github.com/jefazo-isc/aguascavulkan)
@@ -12,7 +12,7 @@
 Si tienes que exponer o presentar **StreetVulkan**, aquí tienes el resumen ejecutivo estructurado para responder qué hace, por qué es innovador, cómo está construido y cómo demostrarlo en vivo:
 
 ### 🎯 1. La Visión del Proyecto
-**StreetVulkan** es una plataforma de **simulación urbana y gemelo digital tridimensional** de la ciudad de **Aguascalientes, México**. Integra datos geoespaciales reales (edificaciones de OpenStreetMap, topografía LiDAR/DEM, red de carreteras y vialidades) en un motor gráfico nativo de ultra-bajo nivel escrito en **C11 puro y Vulkan 1.2**, trasladado también a la Web mediante un kernel programado a mano en **Ensamblador WebAssembly (WAT)** y renderizado con **WebGPU/WebGL2**.
+**StreetVulkan** es una plataforma de **simulación urbana y visualización tridimensional** de la ciudad de **Aguascalientes, México**. Integra datos geoespaciales (edificaciones de OpenStreetMap, elevación DEM satelital Terrarium/SRTM y red vial) en un motor nativo escrito en **C11 con Vulkan 1.2**, junto con un cliente web cuyo kernel matemático está escrito en **WebAssembly Text (WAT)** y cuyo renderizado usa **WebGPU/WebGL2**.
 
 ### 🌟 2. Características Clave & Cifras de Impacto (Para la Presentación)
 - **325,511 Edificios Reales Clasificados**: Procesados por lotes a partir de huellas urbanas con alturas procedimentales, techos y fachadas segmentadas.
@@ -23,8 +23,8 @@ Si tienes que exponer o presentar **StreetVulkan**, aquí tienes el resumen ejec
 - **Topografía Real (DEM 30m)**: Elevación del terreno corregida topográficamente a partir de datos satelitales.
 - **401 Macro-Sectores Modulares**: Arquitectura de *streaming* espacial por celdas para mantener el consumo de memoria acotado (< 99 MB por sector).
 - **Kernel WebAssembly en Ensamblador Puro (`.wat`)**: Cero dependencias pesadas de runtime. Las matemáticas 3D (cámara, proyección, matrices 4x4, frustum culling Gribb/Hartmann y lógica de semáforos) corren en código máquina WASM compilado por nuestro propio compilador/ensamblador en Python.
-- **Renderizado WebGPU Moderno**: Shaders WGSL equivalentes al pipeline Vulkan ejecutándose en el navegador del cliente a 60 FPS sin instalar nada.
-- **Ingeniería de Software Rigurosa (Normas ISO)**: 815 pruebas unitarias en C, 26 pruebas en Python/WASM, sanitizadores de memoria (AddressSanitizer + UndefinedBehaviorSanitizer) y cumplimiento auditado bajo estándares **ISO/IEC 25010, 25023, 25012/25024, 27001/27034, 29119, 9001, 31000** y metodologías **OpenUP / TSP / PSP / Scrum / XP**.
+- **Renderizado Web**: El cliente usa shaders WGSL con WebGPU y un backend WebGL2 alternativo. El objetivo de 60 FPS debe verificarse en el dispositivo y navegador de la demostración; no es un resultado de benchmark de CI.
+- **Verificación del software**: El repositorio incluye pruebas C y Python, una prueba separada de reproducibilidad WAT→WASM, sanitizadores y auditorías internas relacionadas con calidad y seguridad. Estas verificaciones documentan prácticas y resultados parciales; no constituyen certificación ni demuestran por sí solas conformidad formal con normas ISO.
 
 ---
 
@@ -102,13 +102,13 @@ El proyecto cuenta con un riguroso esquema de aseguramiento de calidad con integ
 
 | Comando | Descripción | Alcance |
 | :--- | :--- | :--- |
-| `make test` | Suite de pruebas unitarias | 815 pruebas en C11 + 26 pruebas en Python/WASM (841 pruebas en total, 0 fallos). |
+| `make test` | Suite de pruebas C y Python | Compila y ejecuta el harness C y descubre pruebas `unittest` de Python; la compilación C requiere las dependencias nativas listadas en la guía de instalación. |
 | `make asan-test` | Sanitizadores de memoria dinámica | Valida que no existan memory leaks, buffer overflows ni comportamientos indefinidos (AddressSanitizer + UBSan). |
 | `make metrics` | Auditoría SQuaRE / Métricas de Software | Evalúa métricas ISO 25010, 25023, 25012, 27001, 29119, estimaciones COCOMO-II y puntos de función COSMIC/IFPUG. |
 | `make quality` | Pipeline completo de calidad local | Ejecuta limpieza, build, pruebas unitarias, sanitizadores y generación del reporte de calidad. |
 
 Los flujos de GitHub Actions se ejecutan en cada push y pull request:
-- ✅ **StreetVulkan CI (DevOps & Quality Gate)**: Ejecuta build en GCC, pruebas C/Python/WASM y evaluación ISO 25040.
+- ✅ **StreetVulkan CI (DevOps & Quality Gate)**: Ejecuta build en GCC, pruebas C/Python, sanitizadores, reproducibilidad del artefacto WAT→WASM y verificaciones automatizadas de calidad.
 - ✅ **StreetVulkan WASM & WebGPU Pages**: Empaqueta el cliente WebAssembly, valida la sintaxis y publica a GitHub Pages.
 
 ---
@@ -146,6 +146,8 @@ aguascavulkan/
 ## 📚 Documentación de Metodologías y Normas ISO (Para Evaluaciones Académicas)
 
 Para sustentar la metodología de ingeniería de software y estándares de calidad ante profesores o evaluadores, el proyecto incluye una suite documental completa en el directorio `docs/`:
+
+La guía operativa recomendada para organizar cambios futuros es **[docs/GUIA_METODOLOGIA_PRACTICA.md](docs/GUIA_METODOLOGIA_PRACTICA.md)**. Distingue la práctica de trabajo propuesta de los informes históricos y explica cómo interpretar las pruebas, métricas y limitaciones.
 
 1. **[docs/OPENUP_TSP.md](docs/OPENUP_TSP.md)**: Proceso Unificado Abierto (OpenUP) cruzado con Team Software Process (TSP). Documento de Visión, Stakeholders, roles de equipo, métricas de valor ganado (EV/SPI/CPI) y bitácoras de tiempo/defectos PSP1.
 2. **[docs/SCRUM_XP.md](docs/SCRUM_XP.md)**: Marco ágil Scrum combinado con Extreme Programming (XP). Historias de usuario (`HU-01` a `HU-12`), Sprints 1 a 4, desarrollo guiado por pruebas (TDD), integración continua y actas de retrospectiva.
