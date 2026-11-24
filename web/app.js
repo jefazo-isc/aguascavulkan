@@ -674,7 +674,38 @@ async function main() {
         hudVisible: true,
         trafficPhase: 0,
         trafficSignals: [],
+        paused: false,
+        carsEnabled: true,
+        carCount: 50,
+        simSpeed: 0.05,
     };
+
+    // Allocate memory for dynamic simulated cars (50 cars x 24 B = 1,200 bytes at 0x9000)
+    const MEM_CARS_PTR = 0x9000;
+    const carsBaseFloat = MEM_CARS_PTR >> 2;
+    for (let i = 0; i < state.carCount; i++) {
+        const off = carsBaseFloat + i * 6;
+        f32Mem[off + 0] = 200.0 + (i / state.carCount) * 800.0; // x
+        f32Mem[off + 1] = 8.8;                                 // y
+        f32Mem[off + 2] = (i % 2 === 0) ? 795.5 : 952.0;       // z
+        f32Mem[off + 3] = (i % 2 === 0) ? 90.0 : 0.0;          // yaw
+        f32Mem[off + 4] = (i / state.carCount);                // progress
+        f32Mem[off + 5] = (i % 2);                             // corridor_id (0: Paseo Cruz, 1: JM Chávez)
+    }
+
+    function togglePause(forced) {
+        state.paused = (typeof forced === 'boolean') ? forced : !state.paused;
+        const overlay = document.getElementById('pause-menu-overlay');
+        if (overlay) {
+            overlay.classList.toggle('active', state.paused);
+        }
+        if (state.paused) {
+            if (document.exitPointerLock) document.exitPointerLock();
+            showToast('Simulación Pausada [P / ESC]');
+        } else {
+            showToast('Simulación Reanudada');
+        }
+    }
 
     function resetCamera() {
         f32Mem[0] = INITIAL_CAMERA.pos[0];
@@ -782,6 +813,10 @@ async function main() {
 
     window.addEventListener('keydown', (e) => {
         keysDown.add(e.code);
+        if (e.code === 'KeyP' || e.code === 'Escape') {
+            togglePause();
+            return;
+        }
         if (e.code === 'KeyF') {
             state.flashlightOn = !state.flashlightOn;
             showToast(state.flashlightOn ? 'Linterna: ON' : 'Linterna: OFF');
@@ -904,6 +939,70 @@ async function main() {
     bindHoldButton('btn-sprint', () => { touchMove.sprint = true; }, () => { touchMove.sprint = false; });
 
     document.getElementById('btn-rolcar')?.addEventListener('click', resetCamera);
+    document.getElementById('btn-pause')?.addEventListener('click', () => togglePause());
+    document.getElementById('pause-resume')?.addEventListener('click', () => togglePause(false));
+
+    // Pause Dialog Action Buttons
+    const pauseLogEl = document.getElementById('pause-log-output');
+    function logPause(msg) {
+        if (!pauseLogEl) return;
+        const ts = new Date().toLocaleTimeString();
+        pauseLogEl.innerHTML += `<br>[${ts}] ${msg}`;
+        pauseLogEl.scrollTop = pauseLogEl.scrollHeight;
+    }
+
+    document.getElementById('pause-wasm-test')?.addEventListener('click', () => {
+        try {
+            const v = wasm.get_version();
+            const tick = wasm.traffic_tick(MEM_SIM_TIME_PTR, 0.1);
+            const carsUpdated = wasm.update_vehicle_stream ? wasm.update_vehicle_stream(MEM_CARS_PTR, state.carCount, 0.016, state.simSpeed) : 0;
+            logPause(`✅ Kernel WASM OK: v${v}, Fase Semáforo=${tick}, Vehículos Activos=${carsUpdated}`);
+            showToast('Prueba WASM: Superada con éxito');
+        } catch (err) {
+            logPause(`❌ Error probando WASM: ${err.message}`);
+        }
+    });
+
+    document.getElementById('pause-toggle-cars')?.addEventListener('click', () => {
+        state.carsEnabled = !state.carsEnabled;
+        const elCars = document.getElementById('hud-cars');
+        if (elCars) {
+            elCars.textContent = state.carsEnabled ? `${state.carCount} activos` : 'Pausado';
+            elCars.className = state.carsEnabled ? 'metric-good' : 'metric-warn';
+        }
+        logPause(`🚗 Simulación de tráfico: ${state.carsEnabled ? 'ACTIVADA' : 'DESACTIVADA'}`);
+        showToast(state.carsEnabled ? 'Tráfico: ON' : 'Tráfico: OFF');
+    });
+
+    document.getElementById('pause-toggle-time')?.addEventListener('click', () => {
+        state.presetIdx = (state.presetIdx + 1) % TIME_PRESETS.length;
+        state.simHour = TIME_PRESETS[state.presetIdx].hour;
+        logPause(`☀️ Hora establecida: ${TIME_PRESETS[state.presetIdx].label}`);
+        showToast(`Hora: ${TIME_PRESETS[state.presetIdx].label}`);
+    });
+
+    document.getElementById('pause-force-traffic')?.addEventListener('click', () => {
+        const simTimeFloat = MEM_SIM_TIME_PTR >> 2;
+        const currentPhase = wasm.traffic_tick(MEM_SIM_TIME_PTR, 0.0);
+        const nextPhase = (currentPhase + 1) % 4;
+        const phaseTimes = [0.0, 9.5, 12.5, 21.5];
+        f32Mem[simTimeFloat] = phaseTimes[nextPhase];
+        state.trafficPhase = wasm.traffic_tick(MEM_SIM_TIME_PTR, 0.0);
+        logPause(`🚦 Fase semafórica forzada a: ${TRAFFIC_PHASE_LABELS[state.trafficPhase]}`);
+        showToast(TRAFFIC_PHASE_LABELS[state.trafficPhase]);
+    });
+
+    document.getElementById('pause-toggle-cull')?.addEventListener('click', () => {
+        state.cullingEnabled = !state.cullingEnabled;
+        logPause(`📦 Frustum Culling AABB: ${state.cullingEnabled ? 'HABILITADO' : 'DESHABILITADO'}`);
+        showToast(state.cullingEnabled ? 'Culling: ON' : 'Culling: OFF');
+    });
+
+    document.getElementById('pause-reset-cam')?.addEventListener('click', () => {
+        resetCamera();
+        logPause('📍 Cámara reubicada en Rolcar Paseo de la Cruz');
+    });
+
     document.getElementById('btn-time')?.addEventListener('click', () => {
         state.presetIdx = (state.presetIdx + 1) % TIME_PRESETS.length;
         state.simHour = TIME_PRESETS[state.presetIdx].hour;
@@ -1051,7 +1150,12 @@ async function main() {
         }
 
         // Execute WASM deterministic traffic simulation tick
-        state.trafficPhase = wasm.traffic_tick(MEM_SIM_TIME_PTR, dt);
+        if (!state.paused) {
+            state.trafficPhase = wasm.traffic_tick(MEM_SIM_TIME_PTR, dt);
+            if (state.carsEnabled && wasm.update_vehicle_stream) {
+                wasm.update_vehicle_stream(MEM_CARS_PTR, state.carCount, dt, state.simSpeed);
+            }
+        }
 
         // Compute sun, sky, and dynamic lights
         const { sunDir, skyColor, clearColor } = computeSunAndSky(state.simHour);

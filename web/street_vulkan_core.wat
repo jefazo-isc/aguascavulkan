@@ -919,4 +919,68 @@
     )
     (i32.const 3)
   )
+
+  ;; --------------------------------------------------------------------------
+  ;; 11. update_vehicle_stream(cars_ptr, car_count, dt, speed) -> i32
+  ;;     Updates positions of dynamic simulated cars along road corridors.
+  ;;     Each car has 6 x f32 (24 bytes):
+  ;;       [0] x, [1] y, [2] z, [3] yaw_deg, [4] progress [0..1], [5] corridor_id
+  ;;     Returns total active cars updated.
+  ;; --------------------------------------------------------------------------
+  (func (export "update_vehicle_stream")
+    (param $cars_ptr i32)
+    (param $car_count i32)
+    (param $dt f32)
+    (param $speed f32)
+    (result i32)
+    (local $i i32)
+    (local $offset i32)
+    (local $prog f32)
+    (local $cid f32)
+    (local $px f32)
+    (local $pz f32)
+
+    (if (i32.le_s (local.get $car_count) (i32.const 0))
+      (then (return (i32.const 0)))
+    )
+
+    (local.set $i (i32.const 0))
+    (loop $loop
+      (local.set $offset (i32.add (local.get $cars_ptr) (i32.mul (local.get $i) (i32.const 24))))
+      ;; Progress is at offset + 16
+      (local.set $prog (f32.load (i32.add (local.get $offset) (i32.const 16))))
+      (local.set $prog (f32.add (local.get $prog) (f32.mul (local.get $dt) (local.get $speed))))
+      (if (f32.ge (local.get $prog) (f32.const 1.0))
+        (then (local.set $prog (f32.sub (local.get $prog) (f32.const 1.0))))
+      )
+      (f32.store (i32.add (local.get $offset) (i32.const 16)) (local.get $prog))
+
+      ;; Read corridor ID at offset + 20
+      (local.set $cid (f32.load (i32.add (local.get $offset) (i32.const 20))))
+
+      ;; Corridor 0: Av. Paseo de la Cruz (East-West axis X: 200 -> 1000, Z ~ 795)
+      (if (f32.lt (local.get $cid) (f32.const 0.5))
+        (then
+          (local.set $px (f32.add (f32.const 200.0) (f32.mul (local.get $prog) (f32.const 800.0))))
+          (local.set $pz (f32.const 795.5))
+          (f32.store (local.get $offset) (local.get $px))
+          (f32.store (i32.add (local.get $offset) (i32.const 8)) (local.get $pz))
+          (f32.store (i32.add (local.get $offset) (i32.const 12)) (f32.const 90.0)) ;; Yaw = 90
+        )
+        (else
+          ;; Corridor 1: Av. José María Chávez (North-South axis X ~ 950, Z: 200 -> 1000)
+          (local.set $px (f32.const 952.0))
+          (local.set $pz (f32.add (f32.const 200.0) (f32.mul (local.get $prog) (f32.const 800.0))))
+          (f32.store (local.get $offset) (local.get $px))
+          (f32.store (i32.add (local.get $offset) (i32.const 8)) (local.get $pz))
+          (f32.store (i32.add (local.get $offset) (i32.const 12)) (f32.const 0.0)) ;; Yaw = 0
+        )
+      )
+
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $loop (i32.lt_s (local.get $i) (local.get $car_count)))
+    )
+
+    (local.get $car_count)
+  )
 )
