@@ -1,3 +1,16 @@
+/*
+ * ============================================================================
+ * StreetVulkan Concurrent Logging Subsystem (include/logger.h)
+ * ============================================================================
+ * - Thread-safe logging protected by pthread_mutex_t across worker/render paths
+ * - Six severity levels: TRACE, DEBUG, INFO, WARN, ERROR, and FATAL
+ * - Runtime override via LOG_LEVEL environment variable or logger_set_level()
+ * - Dual persistent output: human-readable log + structured NDJSON (.jsonl)
+ * - Automatic log size rotation (up to 5 MiB x 3 backup files per stream)
+ * - ISO-8601 UTC millisecond timestamps and optional ANSI TTY coloring
+ * - Complies with ISO/IEC 25010 diagnosability & ISO/IEC 27001 audit controls
+ * ============================================================================
+ */
 #ifndef LOGGER_H
 #define LOGGER_H
 
