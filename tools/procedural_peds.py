@@ -12,7 +12,6 @@ import numpy as np
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from procedural_props import make_box, make_icosahedron
-from gltf_writer import export_glb_mesh
 
 COLOR_PALETTES = [
     {

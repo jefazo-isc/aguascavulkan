@@ -14,19 +14,22 @@ import numpy as np
 
 CHUNK_SIZE = 128.0
 
+VERTEX_DTYPE = np.dtype([
+    ('pos', '<f4', 3),
+    ('norm', '<f4', 3),
+    ('uv', '<f4', 2),
+    ('col', '<f4', 4),
+    ('em', '<f4')
+])
+
+
 class FastMeshBuilder:
     """
     Acumulador de geometría de alto rendimiento basado en bloques NumPy.
     Evita preasignaciones gigantes (GBs) y duplicaciones al crecer, minimizando el uso de RAM/swap.
     """
     def __init__(self, initial_capacity=0):
-        self.vtype = np.dtype([
-            ('pos', '<f4', 3),
-            ('norm', '<f4', 3),
-            ('uv', '<f4', 2),
-            ('col', '<f4', 4),
-            ('em', '<f4')
-        ])
+        self.vtype = VERTEX_DTYPE
         self._blocks = []
         self.count = 0
         self._flat_cache = None
@@ -194,11 +197,12 @@ def export_glb_and_chunks(output_glb, output_chunks, mesh_builder, traffic_metad
             "max_x": round(max_x, 2), "max_y": round(max_y, 2), "max_z": round(max_z, 2),
         })
 
-    # Guardar chunks.json
-    chunks_data = {"chunk_size": CHUNK_SIZE, "chunks": chunk_meta}
-    with open(output_chunks, "w") as f:
-        json.dump(chunks_data, f)
-    print(f"[Chunks] Exportados {len(chunk_meta)} chunks ({CHUNK_SIZE:.0f}m) con {valid_verts:,} vértices → {output_chunks}")
+def _write_glb_binary(output_glb, sorted_arr):
+    """Serializa por streaming un arreglo estructurado de vértices (múltiplo de 3) a GLB 2.0."""
+    valid_verts = len(sorted_arr)
+    parent = os.path.dirname(os.path.abspath(output_glb))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
 
     # Serialización por streaming a glTF 2.0 binario (sin duplicar búferes en RAM)
     print(f"[glTF] Serializando búfer binario optimizado ({valid_verts:,} vértices)...")
@@ -274,6 +278,39 @@ def export_glb_and_chunks(output_glb, output_chunks, mesh_builder, traffic_metad
     file_mb = total_length / (1024 * 1024)
     print(f"[glTF] ✅ Guardado exitoso: {output_glb} ({file_mb:.2f} MB, {valid_verts:,} vértices)")
     return valid_verts
+
+
+    # Guardar chunks.json
+    chunks_data = {"chunk_size": CHUNK_SIZE, "chunks": chunk_meta}
+    with open(output_chunks, "w") as f:
+        json.dump(chunks_data, f)
+    print(f"[Chunks] Exportados {len(chunk_meta)} chunks ({CHUNK_SIZE:.0f}m) con {valid_verts:,} vértices → {output_chunks}")
+
+    return _write_glb_binary(output_glb, sorted_arr)
+
+
+def export_glb_mesh(output_glb, vertices):
+    """
+    Exporta una malla directa (FastMeshBuilder, ndarray estructurado o secuencia de tuplas)
+    al formato binario glTF 2.0 (.glb) compatible con StreetVulkan.
+    """
+    vtype = VERTEX_DTYPE
+    if isinstance(vertices, FastMeshBuilder):
+        arr = vertices.get_trimmed_array()
+    elif isinstance(vertices, np.ndarray) and vertices.dtype == vtype:
+        arr = vertices
+    else:
+        vlist = list(vertices)
+        if not vlist:
+            print("[glTF] Advertencia: malla vacía, omitiendo exportación GLB.")
+            return 0
+        arr = np.array(vlist, dtype=vtype)
+
+    valid_verts = (len(arr) // 3) * 3
+    if valid_verts == 0:
+        print("[glTF] Advertencia: menos de 3 vértices válidos, omitiendo exportación GLB.")
+        return 0
+    return _write_glb_binary(output_glb, arr[:valid_verts])
 
 
 def export_traffic_signals_json(output_path, signal_metadata_list):
