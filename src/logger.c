@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #define LOGGER_MAX_FILE_BYTES (5UL * 1024UL * 1024UL) /* 5 MB */
+#define LOGGER_MAX_BACKUPS    3
 #define LOGGER_PATH_MAX       512
 #define LOGGER_MSG_MAX        2048
 
@@ -96,17 +97,24 @@ static int ensure_dir_exists(const char *dir_path) {
 
 static void rotate_if_needed(FILE **fp, const char *path) {
     if (!fp || !*fp || !path || !path[0]) return;
-    long pos = ftell(*fp);
-    if (pos < 0 || (unsigned long)pos < LOGGER_MAX_FILE_BYTES) {
+    struct stat st;
+    if (fstat(fileno(*fp), &st) != 0 || st.st_size < 0 ||
+        (unsigned long)st.st_size < LOGGER_MAX_FILE_BYTES) {
         return;
     }
     fflush(*fp);
     fclose(*fp);
     *fp = NULL;
 
-    char rotated[LOGGER_PATH_MAX + 4];
-    snprintf(rotated, sizeof(rotated), "%s.1", path);
-    (void)rename(path, rotated);
+    char src_path[LOGGER_PATH_MAX + 32];
+    char dst_path[LOGGER_PATH_MAX + 32];
+    for (int i = LOGGER_MAX_BACKUPS - 1; i >= 1; --i) {
+        snprintf(src_path, sizeof(src_path), "%s.%d", path, i);
+        snprintf(dst_path, sizeof(dst_path), "%s.%d", path, i + 1);
+        (void)rename(src_path, dst_path);
+    }
+    snprintf(dst_path, sizeof(dst_path), "%s.1", path);
+    (void)rename(path, dst_path);
 
     *fp = fopen(path, "a");
 }

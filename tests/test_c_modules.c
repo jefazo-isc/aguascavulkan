@@ -754,6 +754,13 @@ static void test_logger_system(void) {
 
     remove(text_path);
     remove(jsonl_path);
+    char rot_path[128];
+    for (int b = 1; b <= 3; ++b) {
+        snprintf(rot_path, sizeof(rot_path), "%s.%d", text_path, b);
+        remove(rot_path);
+        snprintf(rot_path, sizeof(rot_path), "%s.%d", jsonl_path, b);
+        remove(rot_path);
+    }
 
     ASSERT_TRUE(logger_init(log_dir, LOG_LEVEL_INFO) == 1, "logger_init creates dir and opens log files");
     ASSERT_TRUE(logger_get_level() == LOG_LEVEL_INFO, "logger_get_level returns initial INFO level");
@@ -803,8 +810,39 @@ static void test_logger_system(void) {
         ASSERT_TRUE(strstr(buf, "\"line\":") != NULL, "JSONL log includes line field on WARN/ERROR");
     }
 
+    /* Verify 5 MiB x 3 backup rotation via pre-sized files */
+    for (int rot = 1; rot <= 3; ++rot) {
+        FILE *seed = fopen(text_path, "wb");
+        ASSERT_TRUE(seed != NULL, "seed log file opened for rotation test");
+        if (seed) {
+            if (fseek(seed, 5L * 1024L * 1024L, SEEK_SET) == 0) {
+                fprintf(seed, "rotation_seed_%d\n", rot);
+            }
+            fclose(seed);
+        }
+        ASSERT_TRUE(logger_init(log_dir, LOG_LEVEL_INFO) == 1, "logger_init succeeds on oversized log");
+        LOG_INFO("RotTest", "trigger_rotation_%d", rot);
+        logger_shutdown();
+    }
+
+    FILE *curf = fopen(text_path, "r");
+    ASSERT_TRUE(curf != NULL, "rotated active street_vulkan.log exists");
+    if (curf) fclose(curf);
+    for (int b = 1; b <= 3; ++b) {
+        snprintf(rot_path, sizeof(rot_path), "%s.%d", text_path, b);
+        FILE *bf = fopen(rot_path, "r");
+        ASSERT_TRUE(bf != NULL, "rotated log backup .1/.2/.3 exists");
+        if (bf) fclose(bf);
+    }
+
     remove(text_path);
     remove(jsonl_path);
+    for (int b = 1; b <= 3; ++b) {
+        snprintf(rot_path, sizeof(rot_path), "%s.%d", text_path, b);
+        remove(rot_path);
+        snprintf(rot_path, sizeof(rot_path), "%s.%d", jsonl_path, b);
+        remove(rot_path);
+    }
 }
 
 int main(void) {
