@@ -35,6 +35,7 @@ COPY_ROOT_FILES = (
     "Makefile",
     "Makefile.wasm",
     "README.md",
+    "requirements.txt",
 )
 
 SHOWCASE_MODEL_FILES = (

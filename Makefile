@@ -1,6 +1,8 @@
 # Makefile para StreetVulkan
 
+ifeq ($(origin CC),default)
 CC = gcc
+endif
 CFLAGS = -Wall -Wextra -O2 -Iinclude -MMD -MP
 LIBS = -lSDL2 -lvulkan -lm -lpthread
 
@@ -33,35 +35,64 @@ $(SHADERDIR)/%.spv: $(SHADERDIR)/%.vert
 $(SHADERDIR)/%.spv: $(SHADERDIR)/%.frag
 	glslangValidator -V $< -o $@
 
-$(BUILDDIR)/%.o: $(SRCDIR)/%.c
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJECTS)
 	$(CC) $(OBJECTS) -o $(TARGET) $(LIBS)
 
--include $(DEPS)
+TEST_BIN = $(BUILDDIR)/test_c_modules
+TEST_ASAN_BIN = $(BUILDDIR)/test_c_modules_asan
+TEST_MODULES = logger traffic_system road_graph obj_loader ped_system vulkan_memory_pool car_system sector_system vulkan_gltf vulkan_swapchain vulkan_pipeline
+TEST_SRCS = tests/test_c_modules.c $(patsubst %, $(SRCDIR)/%.c, $(TEST_MODULES))
+TEST_OBJS = $(BUILDDIR)/test_c_modules.o $(patsubst %, $(BUILDDIR)/%.o, $(TEST_MODULES))
+TEST_DEPS = $(BUILDDIR)/test_c_modules.d
+
+ASAN_BUILDDIR = $(BUILDDIR)/asan
+ASAN_CFLAGS = -Wall -Wextra -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude -MMD -MP
+ASAN_OBJS = $(patsubst $(BUILDDIR)/%.o, $(ASAN_BUILDDIR)/%.o, $(TEST_OBJS))
+ASAN_DEPS = $(ASAN_OBJS:.o=.d)
+
+-include $(DEPS) $(TEST_DEPS) $(ASAN_DEPS)
 
 clean:
 	rm -rf $(BUILDDIR) $(TARGET) $(SHADERDIR)/*.spv
 	rm -rf tools/__pycache__ tests/__pycache__ tools/metrics/__pycache__
 
-TEST_BIN = $(BUILDDIR)/test_c_modules
-TEST_ASAN_BIN = $(BUILDDIR)/test_c_modules_asan
-TEST_SRCS = tests/test_c_modules.c src/logger.c src/traffic_system.c src/road_graph.c src/obj_loader.c src/ped_system.c src/vulkan_memory_pool.c src/car_system.c src/sector_system.c src/vulkan_gltf.c src/vulkan_swapchain.c src/vulkan_pipeline.c
+$(BUILDDIR)/test_c_modules.o: tests/test_c_modules.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-test: $(BUILDDIR)
-	$(CC) $(CFLAGS) $(TEST_SRCS) -o $(TEST_BIN) $(LIBS)
+$(TEST_BIN): $(TEST_OBJS) | $(BUILDDIR)
+	$(CC) $(TEST_OBJS) -o $(TEST_BIN) $(LIBS)
+
+test: $(TEST_BIN)
 	./$(TEST_BIN)
 	python3 -m unittest discover -s tests -v
 
-asan-test: $(BUILDDIR)
-	$(CC) -Wall -Wextra -O1 -g -fsanitize=address,undefined -static-libasan -fno-omit-frame-pointer -Iinclude $(TEST_SRCS) -o $(TEST_ASAN_BIN) $(LIBS)
+$(ASAN_BUILDDIR):
+	mkdir -p $(ASAN_BUILDDIR)
+
+$(ASAN_BUILDDIR)/%.o: $(SRCDIR)/%.c | $(ASAN_BUILDDIR)
+	$(CC) $(ASAN_CFLAGS) -c $< -o $@
+
+$(ASAN_BUILDDIR)/test_c_modules.o: tests/test_c_modules.c | $(ASAN_BUILDDIR)
+	$(CC) $(ASAN_CFLAGS) -c $< -o $@
+
+$(TEST_ASAN_BIN): $(ASAN_OBJS) | $(ASAN_BUILDDIR)
+	$(CC) -fsanitize=address,undefined -static-libasan $(ASAN_OBJS) -o $(TEST_ASAN_BIN) $(LIBS)
+
+asan-test: $(TEST_ASAN_BIN)
 	./$(TEST_ASAN_BIN)
 
 metrics:
 	python3 tools/metrics/evaluate_iso25040.py
 
-quality: clean all test asan-test metrics
+quality:
+	$(MAKE) clean
+	$(MAKE) all
+	$(MAKE) test
+	$(MAKE) asan-test
+	$(MAKE) metrics
 
 web-build:
 	python3 tools/compile_wat_to_wasm.py

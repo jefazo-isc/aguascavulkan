@@ -319,7 +319,7 @@ def _run_rolcar_sectors_isolated():
 
 
 def _run_ring3_sectors_isolated(macro_size: float):
-    """Regenera en subprocesos aislados todos los macro-sectores del Tercer Anillo (Av. Siglo XXI)."""
+    """Regenera en subprocesos aislados todos los macro-sectores del Tercer Anillo (Av. Siglo XXI: perímetro y área completa)."""
     import subprocess, json
     origin_lat, origin_lon = 21.8807, -102.2965
     osm_xml = fetch_osm_data(-102.37, 21.80, -102.245, 21.95, cache_file="models/osm_tercer_anillo.xml")
@@ -328,6 +328,7 @@ def _run_ring3_sectors_isolated(macro_size: float):
     gc.collect()
 
     sectors = set()
+    r3_pts = []
     for coords, tags, _ in highways:
         name = tags.get("name", "").lower()
         ref = tags.get("ref", "").lower()
@@ -335,6 +336,23 @@ def _run_ring3_sectors_isolated(macro_size: float):
             for lat, lon in coords:
                 x, z = geo_to_meters(lat, lon, origin_lat, origin_lon)
                 sectors.add((int(x // macro_size), int(z // macro_size)))
+                r3_pts.append((x, z))
+
+    # Incluir todos los sectores del área interior delimitada por el perímetro del Tercer Anillo
+    if r3_pts:
+        try:
+            import shapely.geometry as sg
+            hull = sg.MultiPoint(r3_pts).convex_hull
+            min_x, min_z, max_x, max_z = hull.bounds
+            sx0, sx1 = int(min_x // macro_size), int(max_x // macro_size)
+            sz0, sz1 = int(min_z // macro_size), int(max_z // macro_size)
+            for sx in range(sx0, sx1 + 1):
+                for sz in range(sz0, sz1 + 1):
+                    sbox = sg.box(sx * macro_size, sz * macro_size, (sx + 1) * macro_size, (sz + 1) * macro_size)
+                    if sbox.intersects(hull):
+                        sectors.add((sx, sz))
+        except Exception:
+            pass
 
     manifest_path = "models/sectors.json"
     if os.path.exists(manifest_path):
@@ -344,7 +362,7 @@ def _run_ring3_sectors_isolated(macro_size: float):
     else:
         sectors = sorted(sectors)
 
-    print(f"[Batch Tercer Anillo] Regenerando {len(sectors)} macro-sectores del Tercer Anillo en subprocesos aislados...")
+    print(f"[Batch Tercer Anillo] Regenerando {len(sectors)} macro-sectores del Tercer Anillo (perímetro y área completa) en subprocesos aislados...")
     env = os.environ.copy()
     env["MALLOC_ARENA_MAX"] = "2"
     env["OMP_NUM_THREADS"] = "1"

@@ -7,33 +7,80 @@ on:
     branches: [ main ]
   workflow_dispatch: {}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+
+    env:
+      CCACHE_DIR: ~/.ccache
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Vulkan, SDL2 and build dependencies
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      - name: Install Python dependencies (NumPy, Pillow)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            libsdl2-dev \
-            libvulkan-dev \
-            glslang-tools \
-            python3-minimal \
-            python3-numpy \
-            python3-pil
+          pip install -r requirements.txt
+
+      - name: Restore APT packages cache
+        uses: actions/cache@v4
+        id: apt-cache
+        with:
+          path: ~/.cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
+      - name: Install Vulkan, SDL2 and build tools
+        run: |
+          sudo tee /etc/apt/apt.conf.d/01keep-debs <<'EOF'
+          APT::Keep-Downloaded-Packages "true";
+          Binary::apt::APT::Keep-Downloaded-Packages "true";
+          EOF
+          sudo mkdir -p /var/cache/apt/archives
+          if [ -d "$HOME/.cache/apt/archives" ] && ls "$HOME/.cache/apt/archives"/*.deb >/dev/null 2>&1; then
+            echo "Restoring cached deb packages to apt..."
+            sudo cp -n "$HOME/.cache/apt/archives"/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          fi
+          if ! sudo apt-get install -y --no-install-recommends libsdl2-dev libvulkan-dev glslang-tools ccache; then
+            echo "Cache miss or dependencies need update: updating apt repositories..."
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends \
+              libsdl2-dev \
+              libvulkan-dev \
+              glslang-tools \
+              ccache
+          fi
+          mkdir -p "$HOME/.cache/apt/archives"
+          cp -n /var/cache/apt/archives/*.deb "$HOME/.cache/apt/archives/" 2>/dev/null || true
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+          max-size: 500M
+          create-symlink: true
 
       - name: Build engine and shaders
-        run: make clean && make
+        run: make -j$(nproc)
 
       - name: Run XP unit tests (C, ASan/UBSan & Python)
         run: |
-          make test
-          make asan-test
+          make -j$(nproc) test
+          make -j$(nproc) asan-test
 
       - name: Verify reproducible WebAssembly build (.wat -> .wasm)
         run: |

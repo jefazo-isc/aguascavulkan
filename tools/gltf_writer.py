@@ -67,6 +67,89 @@ class FastMeshBuilder:
         return self.data[:self.count]
 
 
+def _write_glb_binary(output_glb, sorted_arr):
+    """Serializa por streaming un arreglo estructurado de vértices (múltiplo de 3) a GLB 2.0."""
+    valid_verts = len(sorted_arr)
+    parent = os.path.dirname(os.path.abspath(output_glb))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    # Serialización por streaming a glTF 2.0 binario (sin duplicar búferes en RAM)
+    print(f"[glTF] Serializando búfer binario optimizado ({valid_verts:,} vértices)...")
+    pos_len = valid_verts * 12
+    norm_len = valid_verts * 12
+    uv_len = valid_verts * 8
+    col_len = valid_verts * 16
+    em_len = valid_verts * 4
+    idx_len = valid_verts * 4
+
+    min_pos = [float(sorted_arr['pos'][:, 0].min()), float(sorted_arr['pos'][:, 1].min()), float(sorted_arr['pos'][:, 2].min())]
+    max_pos = [float(sorted_arr['pos'][:, 0].max()), float(sorted_arr['pos'][:, 1].max()), float(sorted_arr['pos'][:, 2].max())]
+
+    pos_offset = 0
+    norm_offset = pos_offset + pos_len
+    uv_offset = norm_offset + norm_len
+    col_offset = uv_offset + uv_len
+    em_offset = col_offset + col_len
+    idx_offset = em_offset + em_len
+    total_bin_len = idx_offset + idx_len
+
+    gltf_json = {
+        "asset": {"version": "2.0", "generator": "StreetVulkan HighPerformance + emission"},
+        "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2, "COLOR_0": 3, "_EMISSION": 4}, "indices": 5, "mode": 4}]}],
+        "accessors": [
+            {"bufferView": 0, "byteOffset": 0, "componentType": 5126, "count": valid_verts, "type": "VEC3", "min": min_pos, "max": max_pos},
+            {"bufferView": 1, "byteOffset": 0, "componentType": 5126, "count": valid_verts, "type": "VEC3"},
+            {"bufferView": 2, "byteOffset": 0, "componentType": 5126, "count": valid_verts, "type": "VEC2"},
+            {"bufferView": 3, "byteOffset": 0, "componentType": 5126, "count": valid_verts, "type": "VEC4"},
+            {"bufferView": 4, "byteOffset": 0, "componentType": 5126, "count": valid_verts, "type": "SCALAR"},
+            {"bufferView": 5, "byteOffset": 0, "componentType": 5125, "count": valid_verts, "type": "SCALAR"}
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": pos_offset, "byteLength": pos_len},
+            {"buffer": 0, "byteOffset": norm_offset, "byteLength": norm_len},
+            {"buffer": 0, "byteOffset": uv_offset, "byteLength": uv_len},
+            {"buffer": 0, "byteOffset": col_offset, "byteLength": col_len},
+            {"buffer": 0, "byteOffset": em_offset, "byteLength": em_len},
+            {"buffer": 0, "byteOffset": idx_offset, "byteLength": idx_len}
+        ],
+        "buffers": [{"byteLength": total_bin_len}]
+    }
+
+    json_str = json.dumps(gltf_json)
+    json_bytes = json_str.encode('utf-8')
+    while len(json_bytes) % 4 != 0:
+        json_bytes += b' '
+
+    magic = 0x46546C67
+    version = 2
+    total_length = 12 + 8 + len(json_bytes) + 8 + total_bin_len
+
+    glb_header = struct.pack('<III', magic, version, total_length)
+    chunk0_header = struct.pack('<II', len(json_bytes), 0x4E4F534A)
+    chunk1_header = struct.pack('<II', total_bin_len, 0x004E4942)
+
+    SLICE_V = 262144
+    with open(output_glb, "wb") as f:
+        f.write(glb_header)
+        f.write(chunk0_header)
+        f.write(json_bytes)
+        f.write(chunk1_header)
+        for field in ('pos', 'norm', 'uv', 'col', 'em'):
+            col_view = sorted_arr[field]
+            for s0 in range(0, valid_verts, SLICE_V):
+                s1 = min(valid_verts, s0 + SLICE_V)
+                f.write(np.ascontiguousarray(col_view[s0:s1]).tobytes())
+        for s0 in range(0, valid_verts, SLICE_V):
+            s1 = min(valid_verts, s0 + SLICE_V)
+            f.write(np.arange(s0, s1, dtype=np.uint32).tobytes())
+
+    file_mb = total_length / (1024 * 1024)
+    print(f"[glTF] ✅ Guardado exitoso: {output_glb} ({file_mb:.2f} MB, {valid_verts:,} vértices)")
+    return valid_verts
+
+
 def export_glb_and_chunks(output_glb, output_chunks, mesh_builder, traffic_metadata=None, sector_bounds=None):
     """
     Ordena vectorialmente los triángulos por chunks espaciales de 128m,
@@ -196,89 +279,6 @@ def export_glb_and_chunks(output_glb, output_chunks, mesh_builder, traffic_metad
             "min_x": round(min_x, 2), "min_y": round(min_y, 2), "min_z": round(min_z, 2),
             "max_x": round(max_x, 2), "max_y": round(max_y, 2), "max_z": round(max_z, 2),
         })
-
-def _write_glb_binary(output_glb, sorted_arr):
-    """Serializa por streaming un arreglo estructurado de vértices (múltiplo de 3) a GLB 2.0."""
-    valid_verts = len(sorted_arr)
-    parent = os.path.dirname(os.path.abspath(output_glb))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-
-    # Serialización por streaming a glTF 2.0 binario (sin duplicar búferes en RAM)
-    print(f"[glTF] Serializando búfer binario optimizado ({valid_verts:,} vértices)...")
-    pos_len = valid_verts * 12
-    norm_len = valid_verts * 12
-    uv_len = valid_verts * 8
-    col_len = valid_verts * 16
-    em_len = valid_verts * 4
-    idx_len = valid_verts * 4
-
-    min_pos = [float(sorted_arr['pos'][:, 0].min()), float(sorted_arr['pos'][:, 1].min()), float(sorted_arr['pos'][:, 2].min())]
-    max_pos = [float(sorted_arr['pos'][:, 0].max()), float(sorted_arr['pos'][:, 1].max()), float(sorted_arr['pos'][:, 2].max())]
-
-    pos_offset = 0
-    norm_offset = pos_offset + pos_len
-    uv_offset = norm_offset + norm_len
-    col_offset = uv_offset + uv_len
-    em_offset = col_offset + col_len
-    idx_offset = em_offset + em_len
-    total_bin_len = idx_offset + idx_len
-
-    gltf_json = {
-        "asset": {"version": "2.0", "generator": "StreetVulkan HighPerformance + emission"},
-        "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
-        "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2, "COLOR_0": 3, "_EMISSION": 4}, "indices": 5, "mode": 4}]}],
-        "accessors": [
-            {"bufferView": 0, "byteOffset": 0, "componentType": 5126, "count": valid_verts, "type": "VEC3", "min": min_pos, "max": max_pos},
-            {"bufferView": 1, "byteOffset": 0, "componentType": 5126, "count": valid_verts, "type": "VEC3"},
-            {"bufferView": 2, "byteOffset": 0, "componentType": 5126, "count": valid_verts, "type": "VEC2"},
-            {"bufferView": 3, "byteOffset": 0, "componentType": 5126, "count": valid_verts, "type": "VEC4"},
-            {"bufferView": 4, "byteOffset": 0, "componentType": 5126, "count": valid_verts, "type": "SCALAR"},
-            {"bufferView": 5, "byteOffset": 0, "componentType": 5125, "count": valid_verts, "type": "SCALAR"}
-        ],
-        "bufferViews": [
-            {"buffer": 0, "byteOffset": pos_offset, "byteLength": pos_len},
-            {"buffer": 0, "byteOffset": norm_offset, "byteLength": norm_len},
-            {"buffer": 0, "byteOffset": uv_offset, "byteLength": uv_len},
-            {"buffer": 0, "byteOffset": col_offset, "byteLength": col_len},
-            {"buffer": 0, "byteOffset": em_offset, "byteLength": em_len},
-            {"buffer": 0, "byteOffset": idx_offset, "byteLength": idx_len}
-        ],
-        "buffers": [{"byteLength": total_bin_len}]
-    }
-
-    json_str = json.dumps(gltf_json)
-    json_bytes = json_str.encode('utf-8')
-    while len(json_bytes) % 4 != 0:
-        json_bytes += b' '
-
-    magic = 0x46546C67
-    version = 2
-    total_length = 12 + 8 + len(json_bytes) + 8 + total_bin_len
-
-    glb_header = struct.pack('<III', magic, version, total_length)
-    chunk0_header = struct.pack('<II', len(json_bytes), 0x4E4F534A)
-    chunk1_header = struct.pack('<II', total_bin_len, 0x004E4942)
-
-    SLICE_V = 262144
-    with open(output_glb, "wb") as f:
-        f.write(glb_header)
-        f.write(chunk0_header)
-        f.write(json_bytes)
-        f.write(chunk1_header)
-        for field in ('pos', 'norm', 'uv', 'col', 'em'):
-            col_view = sorted_arr[field]
-            for s0 in range(0, valid_verts, SLICE_V):
-                s1 = min(valid_verts, s0 + SLICE_V)
-                f.write(np.ascontiguousarray(col_view[s0:s1]).tobytes())
-        for s0 in range(0, valid_verts, SLICE_V):
-            s1 = min(valid_verts, s0 + SLICE_V)
-            f.write(np.arange(s0, s1, dtype=np.uint32).tobytes())
-
-    file_mb = total_length / (1024 * 1024)
-    print(f"[glTF] ✅ Guardado exitoso: {output_glb} ({file_mb:.2f} MB, {valid_verts:,} vértices)")
-    return valid_verts
-
 
     # Guardar chunks.json
     chunks_data = {"chunk_size": CHUNK_SIZE, "chunks": chunk_meta}

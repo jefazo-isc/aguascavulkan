@@ -53,6 +53,7 @@ Thumbs.db
 
 # Archivos de diagnóstico y temporales
 *.txt
+!requirements.txt
 
 .aider*
 

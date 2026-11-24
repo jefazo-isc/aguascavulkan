@@ -938,6 +938,27 @@ async function main() {
     resetCamera();
     f32Mem[MEM_SIM_TIME_PTR >> 2] = 0.0;
 
+    const TERCER_ANILLO_WAYPOINTS = [
+        { name: 'Tercer Anillo Norte (Av. Siglo XXI)', x: 0.0, y: 15.0, z: 3400.0, yaw: 0.0, pitch: -5.0 },
+        { name: 'Tercer Anillo Oriente (Paso Desnivel)', x: 3400.0, y: 15.0, z: 200.0, yaw: -90.0, pitch: -5.0 },
+        { name: 'Tercer Anillo Sur (Av. Siglo XXI Sur)', x: 0.0, y: 15.0, z: -6800.0, yaw: 180.0, pitch: -5.0 },
+        { name: 'Tercer Anillo Poniente (Salida Calvillo)', x: -6200.0, y: 25.0, z: 0.0, yaw: 90.0, pitch: -5.0 },
+    ];
+    let ring3WaypointIdx = 0;
+
+    function teleportTercerAnillo() {
+        const wp = TERCER_ANILLO_WAYPOINTS[ring3WaypointIdx];
+        ring3WaypointIdx = (ring3WaypointIdx + 1) % TERCER_ANILLO_WAYPOINTS.length;
+        const posBase = MEM_POS_PTR >> 2;
+        f32Mem[posBase + 0] = wp.x;
+        f32Mem[posBase + 1] = wp.y;
+        f32Mem[posBase + 2] = wp.z;
+        state.yaw = wp.yaw;
+        state.pitch = wp.pitch;
+        showToast(`Teleport: ${wp.name}`);
+        maybeStreamNearbySectors(wp.x, wp.z);
+    }
+
     // 5. Sector Manifest & Streaming Loader (Prioritize Sector 0,0)
     const sectorCache = new Map(); // sectorKey -> { entry, aabbData, chunkCount, cx, cz, lastUsed }
     const cullFlagsBySector = new Map(); // sectorKey -> Uint8Array(chunkCount)
@@ -968,7 +989,10 @@ async function main() {
                 glbUrl = `${basePrefix}models/sectors/sector_${entry.mx}_${entry.mz}.glb`;
             }
             if (showLoader && elLoaderText) {
-                elLoaderText.textContent = `Descargando Sector (${entry.mx}, ${entry.mz}) Paseo de la Cruz...`;
+                const sectorLabel = (entry.mx === 0 && entry.mz === 0)
+                    ? 'Sector (0, 0) Paseo de la Cruz'
+                    : `Sector (${entry.mx}, ${entry.mz}) Tercer Anillo Metropolitano`;
+                elLoaderText.textContent = `Descargando ${sectorLabel}...`;
             }
 
             const [arrayBuf, chunks] = await Promise.all([
@@ -1089,6 +1113,8 @@ async function main() {
             toggleTimeFreeze();
         } else if (e.code === 'KeyR') {
             resetCamera();
+        } else if (e.code === 'Digit3' || e.code === 'Numpad3') {
+            teleportTercerAnillo();
         } else if (e.code === 'KeyH') {
             state.hudVisible = !state.hudVisible;
             if (elHud) elHud.classList.toggle('hidden', !state.hudVisible);
@@ -1199,6 +1225,7 @@ async function main() {
     bindHoldButton('btn-sprint', () => { touchMove.sprint = true; }, () => { touchMove.sprint = false; });
 
     document.getElementById('btn-rolcar')?.addEventListener('click', resetCamera);
+    document.getElementById('btn-tercer-anillo')?.addEventListener('click', teleportTercerAnillo);
     document.getElementById('btn-pause')?.addEventListener('click', () => togglePause());
     document.getElementById('pause-resume')?.addEventListener('click', () => togglePause(false));
 
@@ -1261,6 +1288,12 @@ async function main() {
     document.getElementById('pause-reset-cam')?.addEventListener('click', () => {
         resetCamera();
         logPause('📍 Cámara reubicada en Rolcar Paseo de la Cruz');
+    });
+
+    document.getElementById('pause-teleport-tercer-anillo')?.addEventListener('click', () => {
+        teleportTercerAnillo();
+        logPause('🛣️ Teleport a Tercer Anillo (Av. Siglo XXI)');
+        togglePause(false);
     });
 
     document.getElementById('btn-time')?.addEventListener('click', () => {
@@ -1390,8 +1423,9 @@ async function main() {
             MAX_CONCURRENT_STREAM_LOADS - loadingSectors.size,
             MAX_ACTIVE_SECTORS - sectorCache.size
         );
+        if (availableSlots <= 0) return;
 
-        for (let i = 0; i < Math.max(1, availableSlots) && i < candidates.length; i++) {
+        for (let i = 0; i < availableSlots && i < candidates.length; i++) {
             const cand = candidates[i];
             loadSectorEntry(cand.sector, manifestInfo.basePrefix, false).catch((err) => {
                 console.warn(`[Streamer] Falló streaming sector ${cand.key}:`, err.message);
