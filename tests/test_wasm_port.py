@@ -345,12 +345,23 @@ class TestWebClientAssets(unittest.TestCase):
 
         for fname in ("app.js", "renderer_webgpu.js", "renderer_webgl2.js"):
             js_path = os.path.join(WEB_DIR, fname)
-            subprocess.run(
-                [node_bin, "--experimental-default-type=module", "--check", js_path],
-                check=True,
+            proc = subprocess.run(
+                [node_bin, "--check", js_path],
                 capture_output=True,
                 text=True,
             )
+            if proc.returncode != 0:
+                # Fallback for environments where default type is CommonJS
+                check_cmd = [
+                    node_bin,
+                    "--experimental-vm-modules",
+                    "-e",
+                    "const fs = require('fs'); const vm = require('vm'); "
+                    "new vm.SourceTextModule(fs.readFileSync(process.argv[1], 'utf-8'));",
+                    js_path,
+                ]
+                proc = subprocess.run(check_cmd, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, f"Syntax check failed for {fname}: {proc.stderr}\n{proc.stdout}")
 
 
 class TestGitHubShowcaseRepo(unittest.TestCase):
