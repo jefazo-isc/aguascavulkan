@@ -934,15 +934,16 @@ async function main() {
         state.yaw = INITIAL_CAMERA.yaw;
         state.pitch = INITIAL_CAMERA.pitch;
         showToast('Cámara: Rolcar Paseo de la Cruz (Sector 0,0)');
+        maybeStreamNearbySectors(INITIAL_CAMERA.x, INITIAL_CAMERA.z);
     }
     resetCamera();
     f32Mem[MEM_SIM_TIME_PTR >> 2] = 0.0;
 
     const TERCER_ANILLO_WAYPOINTS = [
-        { name: 'Tercer Anillo Norte (Av. Siglo XXI)', x: 0.0, y: 15.0, z: 3400.0, yaw: 0.0, pitch: -5.0 },
-        { name: 'Tercer Anillo Oriente (Paso Desnivel)', x: 3400.0, y: 15.0, z: 200.0, yaw: -90.0, pitch: -5.0 },
-        { name: 'Tercer Anillo Sur (Av. Siglo XXI Sur)', x: 0.0, y: 15.0, z: -6800.0, yaw: 180.0, pitch: -5.0 },
-        { name: 'Tercer Anillo Poniente (Salida Calvillo)', x: -6200.0, y: 25.0, z: 0.0, yaw: 90.0, pitch: -5.0 },
+        { name: 'Tercer Anillo Norte — Paso a Desnivel (Av. Siglo XXI Nte)', x: 532.0, y: 28.0, z: -7134.0, yaw: 0.0, pitch: -5.0 },
+        { name: 'Tercer Anillo Oriente (Av. Siglo XXI Ote)', x: 4927.0, y: 69.5, z: -7.5, yaw: -90.0, pitch: -5.0 },
+        { name: 'Tercer Anillo Sur (Av. Siglo XXI Sur)', x: -1.5, y: 1.0, z: 4011.0, yaw: 180.0, pitch: -5.0 },
+        { name: 'Tercer Anillo Poniente (Av. Siglo XXI Pte)', x: -7500.0, y: 21.0, z: 15.0, yaw: 90.0, pitch: -5.0 },
     ];
     let ring3WaypointIdx = 0;
 
@@ -1006,6 +1007,17 @@ async function main() {
                 fetchChunksForSector(entry, basePrefix),
             ]);
 
+            // If camera teleported far away while downloading, discard early to avoid GPU upload thrashing
+            const posBase = MEM_POS_PTR >> 2;
+            const curCamX = f32Mem[posBase + 0];
+            const curCamZ = f32Mem[posBase + 2];
+            const macroSize = (manifestInfo && manifestInfo.manifest && manifestInfo.manifest.macro_size) || 1024.0;
+            const sectorCenterX = (entry.mx + 0.5) * macroSize;
+            const sectorCenterZ = (entry.mz + 0.5) * macroSize;
+            if (Math.hypot(sectorCenterX - curCamX, sectorCenterZ - curCamZ) > STREAM_UNLOAD_RADIUS) {
+                return;
+            }
+
             if (showLoader && elLoaderText) {
                 elLoaderText.textContent = `Subiendo geometría GLB a ${backendInfo.backend}...`;
             }
@@ -1024,7 +1036,6 @@ async function main() {
                 aabbData[i * 6 + 5] = c.max_z;
             }
 
-            const macroSize = (manifestInfo && manifestInfo.manifest && manifestInfo.manifest.macro_size) || 1024.0;
             const cx = (entry.mx + 0.5) * macroSize;
             const cz = (entry.mz + 0.5) * macroSize;
             sectorCache.set(key, {

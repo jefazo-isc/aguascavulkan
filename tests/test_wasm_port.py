@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -816,6 +817,123 @@ class TestGitHubShowcaseRepo(unittest.TestCase):
         finally:
             if tmp_ctx is not None:
                 tmp_ctx.cleanup()
+
+
+class TestTercerAnilloExpansion(unittest.TestCase):
+    """Verifica que el terreno cubre todo Tercer Anillo (perímetro y área completa) sin costuras DEM,
+
+    con trincheras subterráneas, límites < 95 MB por sector y streaming web funcional.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        cls.workflow_path = os.path.join(ROOT, ".github", "workflows", "wasm-pages.yml")
+        cls.manifest_path = os.path.join(ROOT, "models", "sectors.json")
+
+    def _extract_workflow_coords(self):
+        with open(self.workflow_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        m = re.search(r"KEY_TERCER_ANILLO_COORDS\s*=\s*\{([^}]+)\}", content, re.DOTALL)
+        self.assertIsNotNone(m, "KEY_TERCER_ANILLO_COORDS must exist in wasm-pages.yml")
+        coords = eval("{" + m.group(1) + "}")
+        return coords
+
+    def test_tercer_anillo_workflow_coords_completeness_and_sizes(self):
+        """Verifica que todos los sectores de Tercer Anillo existen, son < 95 MB y tienen chunks válidos."""
+        coords = self._extract_workflow_coords()
+        self.assertGreaterEqual(len(coords), 148, "Must cover at least 148 macro-sectors of Tercer Anillo")
+
+        with open(self.manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        manifest_map = {(s["mx"], s["mz"]): s for s in manifest.get("sectors", [])}
+
+        sectors_dir = os.path.join(ROOT, "models", "sectors")
+        max_bytes = 95 * 1024 * 1024
+
+        for mx, mz in coords:
+            self.assertIn((mx, mz), manifest_map, f"Sector ({mx}, {mz}) missing in models/sectors.json")
+            entry = manifest_map[(mx, mz)]
+            self.assertGreater(entry.get("vert_count", 0), 0, f"Sector ({mx}, {mz}) has zero vertices")
+
+            glb_file = os.path.join(sectors_dir, f"sector_{mx}_{mz}.glb")
+            self.assertTrue(os.path.isfile(glb_file), f"Sector GLB missing: {glb_file}")
+            sz = os.path.getsize(glb_file)
+            self.assertGreater(sz, 0, f"Empty GLB: {glb_file}")
+            self.assertLess(sz, max_bytes, f"Sector GLB exceeds 95 MB limit: {glb_file} ({sz} bytes)")
+
+            chunk_file = os.path.join(sectors_dir, f"chunks_{mx}_{mz}.json")
+            self.assertTrue(os.path.isfile(chunk_file), f"Chunks JSON missing: {chunk_file}")
+            with open(chunk_file, "r", encoding="utf-8") as cf:
+                cdata = json.load(cf)
+            self.assertIn("chunks", cdata)
+            self.assertGreater(len(cdata["chunks"]), 0, f"No chunks in {chunk_file}")
+
+    def test_tercer_anillo_web_waypoints_elevation_and_coords(self):
+        """Verifica que los waypoints de Tercer Anillo en web/app.js apuntan a coordenadas reales y ras del suelo DEM."""
+        from geo_dem import TerrainElevation, DEFAULT_ORIGIN_LAT, DEFAULT_ORIGIN_LON
+
+        terrain = TerrainElevation(
+            21.8000, 21.9500, -102.3700, -102.2450, nx=64, ny=64,
+            origin_lat=DEFAULT_ORIGIN_LAT, origin_lon=DEFAULT_ORIGIN_LON
+        )
+
+        app_js_path = os.path.join(ROOT, "web", "app.js")
+        with open(app_js_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        m = re.search(r"const TERCER_ANILLO_WAYPOINTS\s*=\s*\[(.*?)\];", content, re.DOTALL)
+        self.assertIsNotNone(m, "TERCER_ANILLO_WAYPOINTS must exist in web/app.js")
+        wp_block = m.group(1)
+
+        # Parse waypoints objects
+        wp_matches = re.findall(r"\{\s*name:\s*'([^']+)',\s*x:\s*([-\d.]+),\s*y:\s*([-\d.]+),\s*z:\s*([-\d.]+)", wp_block)
+        self.assertEqual(len(wp_matches), 4, "Must have exactly 4 cardinal waypoints for Tercer Anillo")
+
+        for name, sx, sy, sz in wp_matches:
+            x, y, z = float(sx), float(sy), float(sz)
+            gy = terrain.get_real_topography(x, z)
+
+            # Validar direcciones cardinales (-Z Norte, +Z Sur, +X Oriente, -X Poniente)
+            if "Norte" in name:
+                self.assertLess(z, 0, f"North waypoint must have z < 0: {name} (z={z})")
+            elif "Sur" in name:
+                self.assertGreater(z, 0, f"South waypoint must have z > 0: {name} (z={z})")
+            elif "Oriente" in name:
+                self.assertGreater(x, 0, f"East waypoint must have x > 0: {name} (x={x})")
+            elif "Poniente" in name:
+                self.assertLess(x, 0, f"West waypoint must have x < 0: {name} (x={x})")
+
+            # Validar que la altura Y esté a ras de suelo o paso a desnivel (+- 3.5m del terreno DEM)
+            diff_y = y - gy
+            self.assertGreaterEqual(diff_y, -1.0, f"Waypoint {name} is buried underground: y={y}, gy={gy:.2f}")
+            self.assertLessEqual(diff_y, 4.0, f"Waypoint {name} is floating in the air: y={y}, gy={gy:.2f}")
+
+    def test_dem_boundary_seamless_continuity(self):
+        """Verifica que la malla de elevación satelital DEM no tiene fisuras entre macro-sectores contiguos."""
+        from geo_dem import TerrainElevation, DEFAULT_ORIGIN_LAT, DEFAULT_ORIGIN_LON
+
+        terrain = TerrainElevation(
+            21.8000, 21.9500, -102.3700, -102.2450, nx=64, ny=64,
+            origin_lat=DEFAULT_ORIGIN_LAT, origin_lon=DEFAULT_ORIGIN_LON
+        )
+
+        test_boundaries_x = [-4096.0, -1024.0, 0.0, 1024.0, 3072.0]
+        test_boundaries_z = [-5120.0, -2048.0, 0.0, 1024.0, 3072.0]
+
+        for bx in test_boundaries_x:
+            for z in range(-3000, 3000, 500):
+                h0 = terrain.get_real_topography(bx - 0.0001, float(z))
+                h1 = terrain.get_real_topography(bx + 0.0001, float(z))
+                self.assertAlmostEqual(h0, h1, delta=0.001,
+                                       msg=f"Seam detected at X boundary {bx} at z={z}: {h0} vs {h1}")
+
+        for bz in test_boundaries_z:
+            for x in range(-3000, 3000, 500):
+                h0 = terrain.get_real_topography(float(x), bz - 0.0001)
+                h1 = terrain.get_real_topography(float(x), bz + 0.0001)
+                self.assertAlmostEqual(h0, h1, delta=0.001,
+                                       msg=f"Seam detected at Z boundary {bz} at x={x}: {h0} vs {h1}")
 
 
 if __name__ == "__main__":

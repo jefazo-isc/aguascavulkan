@@ -312,20 +312,22 @@ def prepare_repo(
 
     if commit:
         subprocess.run(["git", "add", "-A"], cwd=str(target), check=True)
-        subprocess.run(
-            [
-                "git",
-                "-c",
-                "user.name=StreetVulkan CI",
-                "-c",
-                "user.email=ci@streetvulkan.local",
-                "commit",
-                "-m",
-                "Initial StreetVulkan WASM + WebGPU/WebGL2 showcase",
-            ],
-            cwd=str(target),
-            check=True,
-        )
+        diff_proc = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=str(target))
+        if diff_proc.returncode != 0:
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=StreetVulkan CI",
+                    "-c",
+                    "user.email=ci@streetvulkan.local",
+                    "commit",
+                    "-m",
+                    "Initial StreetVulkan WASM + WebGPU/WebGL2 showcase",
+                ],
+                cwd=str(target),
+                check=True,
+            )
 
     return {
         "target": str(target),

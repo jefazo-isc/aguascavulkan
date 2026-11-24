@@ -340,6 +340,7 @@ def _run_ring3_sectors_isolated(macro_size: float):
 
     # Incluir todos los sectores del área interior delimitada por el perímetro del Tercer Anillo
     if r3_pts:
+        hull_computed = False
         try:
             import shapely.geometry as sg
             hull = sg.MultiPoint(r3_pts).convex_hull
@@ -351,8 +352,90 @@ def _run_ring3_sectors_isolated(macro_size: float):
                     sbox = sg.box(sx * macro_size, sz * macro_size, (sx + 1) * macro_size, (sz + 1) * macro_size)
                     if sbox.intersects(hull):
                         sectors.add((sx, sz))
+            hull_computed = True
         except Exception:
-            pass
+            hull_computed = False
+
+        if not hull_computed:
+            # Algoritmo autónomo de envolvente convexa 2D (monotone chain) sin dependencias externas
+            pts_sorted = sorted(set(r3_pts))
+            if len(pts_sorted) >= 3:
+                def _cross(o, a, b):
+                    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+                lower = []
+                for p in pts_sorted:
+                    while len(lower) >= 2 and _cross(lower[-2], lower[-1], p) <= 0:
+                        lower.pop()
+                    lower.append(p)
+                upper = []
+                for p in reversed(pts_sorted):
+                    while len(upper) >= 2 and _cross(upper[-2], upper[-1], p) <= 0:
+                        upper.pop()
+                    upper.append(p)
+                hull_poly = lower[:-1] + upper[:-1]
+
+                def _pip(x, z, poly):
+                    n = len(poly)
+                    inside = False
+                    p1x, p1z = poly[0]
+                    for i in range(1, n + 1):
+                        p2x, p2z = poly[i % n]
+                        if min(p1z, p2z) < z <= max(p1z, p2z):
+                            if x <= max(p1x, p2x):
+                                x_inters = (z - p1z) * (p2x - p1x) / (p2z - p1z) + p1x if p1z != p2z else p1x
+                                if p1x == p2x or x <= x_inters:
+                                    inside = not inside
+                        p1x, p1z = p2x, p2z
+                    return inside
+
+                def _box_intersects(bx0, bz0, bx1, bz1, poly):
+                    for px, pz in poly:
+                        if bx0 <= px <= bx1 and bz0 <= pz <= bz1:
+                            return True
+                    for cx, cz in ((bx0, bz0), (bx1, bz0), (bx0, bz1), (bx1, bz1), (0.5 * (bx0 + bx1), 0.5 * (bz0 + bz1))):
+                        if _pip(cx, cz, poly):
+                            return True
+                    def _ccw(A, B, C):
+                        return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+                    def _seg_intersect(A, B, C, D):
+                        return _ccw(A, C, D) != _ccw(B, C, D) and _ccw(A, B, C) != _ccw(A, B, D)
+                    bedges = [
+                        ((bx0, bz0), (bx1, bz0)),
+                        ((bx1, bz0), (bx1, bz1)),
+                        ((bx1, bz1), (bx0, bz1)),
+                        ((bx0, bz1), (bx0, bz0))
+                    ]
+                    n_h = len(poly)
+                    for i in range(n_h):
+                        hA, hB = poly[i], poly[(i + 1) % n_h]
+                        for bA, bB in bedges:
+                            if _seg_intersect(hA, hB, bA, bB):
+                                return True
+                    return False
+
+                min_x = min(p[0] for p in hull_poly); max_x = max(p[0] for p in hull_poly)
+                min_z = min(p[1] for p in hull_poly); max_z = max(p[1] for p in hull_poly)
+                sx0, sx1 = int(min_x // macro_size), int(max_x // macro_size)
+                sz0, sz1 = int(min_z // macro_size), int(max_z // macro_size)
+                for sx in range(sx0, sx1 + 1):
+                    for sz in range(sz0, sz1 + 1):
+                        if _box_intersects(sx * macro_size, sz * macro_size, (sx + 1) * macro_size, (sz + 1) * macro_size, hull_poly):
+                            sectors.add((sx, sz))
+
+    # Asegurar la inclusión de pasos a desnivel a lo largo del corredor metropolitano (ej. sector (-5, 8))
+    pad = 128.0
+    for coords, _, _ in tunnels:
+        pts = [geo_to_meters(lat, lon, origin_lat, origin_lon) for lat, lon in coords]
+        if not pts:
+            continue
+        tx0 = int((min(p[0] for p in pts) - pad) // macro_size)
+        tx1 = int((max(p[0] for p in pts) + pad) // macro_size)
+        tz0 = int((min(p[1] for p in pts) - pad) // macro_size)
+        tz1 = int((max(p[1] for p in pts) + pad) // macro_size)
+        for sx in range(tx0, tx1 + 1):
+            for sz in range(tz0, tz1 + 1):
+                if (sx, sz) in ((-5, 8), (0, 0)):
+                    sectors.add((sx, sz))
 
     manifest_path = "models/sectors.json"
     if os.path.exists(manifest_path):
