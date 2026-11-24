@@ -45,9 +45,11 @@ static inline int chunk_system_load(ChunkSystem *cs, const char *filepath) {
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char *json = (char*)malloc(fsize + 1);
+    if (fsize <= 0) { fclose(f); return 0; }
+    char *json = (char*)malloc((size_t)fsize + 1);
     if (!json) { fclose(f); return 0; }
-    fread(json, 1, fsize, f);
+    size_t nread = fread(json, 1, (size_t)fsize, f);
+    (void)nread;
     json[fsize] = '\0';
     fclose(f);
 

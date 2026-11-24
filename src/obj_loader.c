@@ -110,13 +110,13 @@ typedef struct {
 
 static ObjVertexRef parse_vertex_ref(const char* str) {
     ObjVertexRef ref = {0, 0, 0};
-    char* slash1 = strchr(str, '/');
+    const char* slash1 = strchr(str, '/');
     if (!slash1) {
         ref.v = atoi(str);
         return ref;
     }
     ref.v = atoi(str);
-    char* slash2 = strchr(slash1 + 1, '/');
+    const char* slash2 = strchr(slash1 + 1, '/');
     if (!slash2) {
         ref.vt = atoi(slash1 + 1);
         return ref;

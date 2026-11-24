@@ -1,3 +1,6 @@
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC system_header
+#endif
 /**
  * cgltf - a single-file glTF 2.0 parser written in C99.
  *
