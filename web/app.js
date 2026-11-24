@@ -730,9 +730,14 @@ async function main() {
         loadingSectors.add(key);
 
         try {
-            const glbUrl = entry.file.startsWith('..') || entry.file.startsWith('./')
+            let glbUrl = entry.file.startsWith('..') || entry.file.startsWith('./')
                 ? entry.file
                 : `${basePrefix}${entry.file}`;
+
+            // Safety check: if file path is an absolute /tmp path or non-relative, resolve cleanly to models/sectors
+            if (glbUrl.includes('/tmp/') || glbUrl.startsWith('/')) {
+                glbUrl = `${basePrefix}models/sectors/sector_${entry.mx}_${entry.mz}.glb`;
+            }
             if (showLoader && elLoaderText) {
                 elLoaderText.textContent = `Descargando Sector (${entry.mx}, ${entry.mz}) Paseo de la Cruz...`;
             }
