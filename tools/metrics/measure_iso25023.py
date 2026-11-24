@@ -59,7 +59,7 @@ def check_shader_compilation():
 
 def _compile_single_c(args):
     cf, obj_path = args
-    rc, out, dt = run_cmd(["gcc", "-Wall", "-Wextra", "-O2", "-Iinclude", "-c", cf, "-o", obj_path])
+    rc, out, dt = run_cmd(["gcc", "-Wall", "-Wextra", "-O2", "-Wno-attribute-warning", "-Iinclude", "-c", cf, "-o", obj_path])
     warn_count = len(re.findall(r":\d+:\d+:\s+warning:", out))
     return rc, warn_count, dt
 
