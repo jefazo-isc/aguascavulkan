@@ -310,8 +310,15 @@ def main():
     print(f"[RoadGraph] Componentes conexas: {len(components)}. La mayor cubre {len(largest_comp)}/{len(valid_edges)} aristas ({cov_ratio*100:.1f}%)")
 
     # Si hay aristas fuera de la componente principal, conservamos la mayor o mantenemos todas si cov_ratio >= 0.95
-    if cov_ratio < 0.95:
-        print("[RoadGraph] ADVERTENCIA: La componente principal es menor al 95%")
+    if cov_ratio < 0.95 and largest_comp:
+        print("[RoadGraph] ADVERTENCIA: La componente principal es menor al 95%; conservando únicamente la componente conexa mayor.")
+        keep = set(largest_comp)
+        valid_edges = [e for idx, e in enumerate(valid_edges) if idx in keep]
+        for nd in nodes_data:
+            nd[4] = 0
+        for e in valid_edges:
+            nodes_data[e["a"]][4] += 1
+            nodes_data[e["b"]][4] += 1
 
     # Preparar datos finales para binario
     pt_offset = 0
@@ -351,13 +358,13 @@ def main():
         header = struct.pack("<4sIII", b"RGP1", len(nodes_data), len(final_edges), len(final_points))
         f.write(header)
 
-        # Nodes (24B cada uno): f32 x,y,z; i32 signal_group; u8 degree, pad[3]
+        # Nodes (20B cada uno): f32 x,y,z; i32 signal_group; u8 degree, pad[3]
         for nd in nodes_data:
             deg = min(255, nd[4])
             node_bytes = struct.pack("<fffiBBBB", nd[0], nd[1], nd[2], nd[3], deg, 0, 0, 0)
             f.write(node_bytes)
 
-        # Edges (32B cada uno): u32 a,b, pt_off, pt_count; f32 speed_ms, width; u8 lanes_fwd, lanes_rev, oneway, pad
+        # Edges (28B cada uno): u32 a,b, pt_off, pt_count; f32 speed_ms, width; u8 lanes_fwd, lanes_rev, oneway, pad
         for ed in final_edges:
             edge_bytes = struct.pack("<IIIIffBBBB",
                                      ed["a"], ed["b"], ed["pt_off"], ed["pt_count"],
