@@ -113,28 +113,71 @@ function extractAccessorTypedArray(gltf, accessorIdx, arrayBuffer, binBaseOffset
     const bv = gltf.bufferViews[acc.bufferView];
     const byteOffset = binBaseOffset + (bv.byteOffset || 0) + (acc.byteOffset || 0);
     const elemCount = acc.count * numComponents;
-    const compSize = expectedType.BYTES_PER_ELEMENT;
-    const expectedStride = numComponents * compSize;
-    const actualStride = bv.byteStride || 0;
+    const compType = acc.componentType || 5126;
+    const isNormalized = Boolean(acc.normalized);
 
-    if ((actualStride === 0 || actualStride === expectedStride) && (byteOffset % compSize === 0)) {
-        return new expectedType(arrayBuffer, byteOffset, elemCount);
+    // Fast path: direct typed array view if matching componentType, zero/matching stride, and alignment
+    if (expectedType === Float32Array && compType === 5126) {
+        const compSize = 4;
+        const expectedStride = numComponents * compSize;
+        const actualStride = bv.byteStride || 0;
+        if ((actualStride === 0 || actualStride === expectedStride) && (byteOffset % compSize === 0)) {
+            return new Float32Array(arrayBuffer, byteOffset, elemCount);
+        }
+    } else if (expectedType === Uint32Array && compType === 5125) {
+        const compSize = 4;
+        const expectedStride = numComponents * compSize;
+        const actualStride = bv.byteStride || 0;
+        if ((actualStride === 0 || actualStride === expectedStride) && (byteOffset % compSize === 0)) {
+            return new Uint32Array(arrayBuffer, byteOffset, elemCount);
+        }
+    } else if (expectedType === Uint16Array && compType === 5123) {
+        const compSize = 2;
+        const expectedStride = numComponents * compSize;
+        const actualStride = bv.byteStride || 0;
+        if ((actualStride === 0 || actualStride === expectedStride) && (byteOffset % compSize === 0)) {
+            return new Uint16Array(arrayBuffer, byteOffset, elemCount);
+        }
+    } else if (expectedType === Uint8Array && compType === 5121) {
+        const compSize = 1;
+        const expectedStride = numComponents * compSize;
+        const actualStride = bv.byteStride || 0;
+        if (actualStride === 0 || actualStride === expectedStride) {
+            return new Uint8Array(arrayBuffer, byteOffset, elemCount);
+        }
     }
 
     const out = new expectedType(elemCount);
     const view = new DataView(arrayBuffer);
-    const stride = actualStride || expectedStride;
+    let compSize = 4;
+    if (compType === 5120 || compType === 5121) compSize = 1;
+    else if (compType === 5122 || compType === 5123) compSize = 2;
+    const expectedStride = numComponents * compSize;
+    const stride = bv.byteStride || expectedStride;
+
     for (let i = 0; i < acc.count; i++) {
         const rowOff = byteOffset + i * stride;
         for (let c = 0; c < numComponents; c++) {
             const off = rowOff + c * compSize;
-            if (expectedType === Float32Array) {
-                out[i * numComponents + c] = view.getFloat32(off, true);
-            } else if (expectedType === Uint32Array) {
-                out[i * numComponents + c] = view.getUint32(off, true);
-            } else if (expectedType === Uint16Array) {
-                out[i * numComponents + c] = view.getUint16(off, true);
+            let val = 0;
+            if (compType === 5126) {
+                val = view.getFloat32(off, true);
+            } else if (compType === 5125) {
+                val = view.getUint32(off, true);
+            } else if (compType === 5123) {
+                val = view.getUint16(off, true);
+                if (expectedType === Float32Array && isNormalized) val /= 65535.0;
+            } else if (compType === 5122) {
+                val = view.getInt16(off, true);
+                if (expectedType === Float32Array && isNormalized) val = Math.max(-1.0, val / 32767.0);
+            } else if (compType === 5121) {
+                val = view.getUint8(off);
+                if (expectedType === Float32Array && isNormalized) val /= 255.0;
+            } else if (compType === 5120) {
+                val = view.getInt8(off);
+                if (expectedType === Float32Array && isNormalized) val = Math.max(-1.0, val / 127.0);
             }
+            out[i * numComponents + c] = val;
         }
     }
     return out;
@@ -174,62 +217,235 @@ function parseGLB(arrayBuffer) {
         throw new Error('GLB missing mesh JSON or BIN chunk');
     }
 
-    const prim = gltf.meshes[0].primitives[0];
-    const attrs = prim.attributes;
-    if (attrs.POSITION === undefined) {
-        throw new Error('GLB primitive missing POSITION attribute');
-    }
+    // Collect all valid primitives across all meshes
+    const primDescriptors = [];
+    let totalVertexCount = 0;
+    let totalIndexCount = 0;
 
-    const posAcc = gltf.accessors[attrs.POSITION];
-    const vertexCount = posAcc.count;
+    for (let m = 0; m < gltf.meshes.length; m++) {
+        const mesh = gltf.meshes[m];
+        if (!mesh.primitives || mesh.primitives.length === 0) continue;
+        for (let p = 0; p < mesh.primitives.length; p++) {
+            const prim = mesh.primitives[p];
+            const attrs = prim.attributes;
+            if (!attrs || attrs.POSITION === undefined) continue;
 
-    const pos = extractAccessorTypedArray(gltf, attrs.POSITION, arrayBuffer, binBaseOffset, 3, Float32Array);
+            const posAcc = gltf.accessors[attrs.POSITION];
+            if (!posAcc || !posAcc.count) continue;
+            const vertCount = posAcc.count;
 
-    let norm;
-    if (attrs.NORMAL !== undefined) {
-        norm = extractAccessorTypedArray(gltf, attrs.NORMAL, arrayBuffer, binBaseOffset, 3, Float32Array);
-    } else {
-        norm = new Float32Array(vertexCount * 3);
-        for (let i = 0; i < vertexCount; i++) norm[i * 3 + 1] = 1.0;
-    }
+            let idxCount = vertCount;
+            if (prim.indices !== undefined) {
+                const idxAcc = gltf.accessors[prim.indices];
+                if (idxAcc) idxCount = idxAcc.count;
+            }
 
-    let uv;
-    if (attrs.TEXCOORD_0 !== undefined) {
-        uv = extractAccessorTypedArray(gltf, attrs.TEXCOORD_0, arrayBuffer, binBaseOffset, 2, Float32Array);
-    } else {
-        uv = new Float32Array(vertexCount * 2);
-    }
+            const meshName = mesh.name || '';
+            const matName = (prim.material !== undefined && gltf.materials && gltf.materials[prim.material])
+                ? (gltf.materials[prim.material].name || '')
+                : '';
+            const isBuilding = /build|edific|facad|roof|wall|casa|rolcar|comercial|commerc|residen|tienda|store|shop|house/i.test(meshName) ||
+                               /build|edific|facad|roof|wall|casa|rolcar|comercial|commerc|residen|tienda|store|shop|house/i.test(matName);
 
-    let col;
-    if (attrs.COLOR_0 !== undefined) {
-        col = extractAccessorTypedArray(gltf, attrs.COLOR_0, arrayBuffer, binBaseOffset, 4, Float32Array);
-    } else {
-        col = new Float32Array(vertexCount * 4);
-        col.fill(1.0);
-    }
+            primDescriptors.push({
+                meshIdx: m,
+                primIdx: p,
+                meshName,
+                matName,
+                isBuilding,
+                attrs,
+                indicesAccIdx: prim.indices,
+                materialIdx: prim.material,
+                vertCount,
+                idxCount,
+            });
 
-    let em;
-    const emIdx = attrs._EMISSION !== undefined ? attrs._EMISSION : attrs.EMISSION;
-    if (emIdx !== undefined) {
-        em = extractAccessorTypedArray(gltf, emIdx, arrayBuffer, binBaseOffset, 1, Float32Array);
-    } else {
-        em = new Float32Array(vertexCount);
-    }
-
-    let indices;
-    let indexFormat = 'uint32';
-    if (prim.indices !== undefined) {
-        const idxAcc = gltf.accessors[prim.indices];
-        if (idxAcc.componentType === 5123) {
-            indices = extractAccessorTypedArray(gltf, prim.indices, arrayBuffer, binBaseOffset, 1, Uint16Array);
-            indexFormat = 'uint16';
-        } else {
-            indices = extractAccessorTypedArray(gltf, prim.indices, arrayBuffer, binBaseOffset, 1, Uint32Array);
-            indexFormat = 'uint32';
+            totalVertexCount += vertCount;
+            totalIndexCount += idxCount;
         }
-    } else {
-        indices = new Uint32Array(vertexCount);
-        for (let i = 0; i < vertexCount; i++) indices[i] = i;
+    }
+
+    if (totalVertexCount === 0) {
+        throw new Error('GLB contains no valid vertex geometry');
+    }
+
+    const pos = new Float32Array(totalVertexCount * 3);
+    const norm = new Float32Array(totalVertexCount * 3);
+    const uv = new Float32Array(totalVertexCount * 2);
+    const col = new Float32Array(totalVertexCount * 4);
+    const em = new Float32Array(totalVertexCount);
+
+    const useUint32 = (totalVertexCount > 65535) || primDescriptors.some(d => {
+        if (d.indicesAccIdx === undefined) return false;
+        const acc = gltf.accessors[d.indicesAccIdx];
+        return acc && acc.componentType === 5125;
+    });
+    const indices = useUint32 ? new Uint32Array(totalIndexCount) : new Uint16Array(totalIndexCount);
+    const indexFormat = useUint32 ? 'uint32' : 'uint16';
+
+    const submeshes = [];
+    let vertWriteOffset = 0;
+    let idxWriteOffset = 0;
+
+    for (const desc of primDescriptors) {
+        const { attrs, vertCount, idxCount, isBuilding, meshIdx, primIdx, meshName } = desc;
+        const vStart = vertWriteOffset;
+        const iStart = idxWriteOffset;
+
+        // POSITION
+        const primPos = extractAccessorTypedArray(gltf, attrs.POSITION, arrayBuffer, binBaseOffset, 3, Float32Array);
+        pos.set(primPos, vStart * 3);
+
+        // NORMAL
+        if (attrs.NORMAL !== undefined) {
+            const primNorm = extractAccessorTypedArray(gltf, attrs.NORMAL, arrayBuffer, binBaseOffset, 3, Float32Array);
+            norm.set(primNorm, vStart * 3);
+        } else {
+            for (let i = 0; i < vertCount; i++) norm[(vStart + i) * 3 + 1] = 1.0;
+        }
+
+        // TEXCOORD_0
+        const uvIdx = attrs.TEXCOORD_0 !== undefined ? attrs.TEXCOORD_0 : attrs.TEXCOORD;
+        if (uvIdx !== undefined) {
+            const primUv = extractAccessorTypedArray(gltf, uvIdx, arrayBuffer, binBaseOffset, 2, Float32Array);
+            uv.set(primUv, vStart * 2);
+        }
+
+        // COLOR_0
+        const colIdx = attrs.COLOR_0 !== undefined ? attrs.COLOR_0 : attrs.COLOR;
+        if (colIdx !== undefined) {
+            const acc = gltf.accessors[colIdx];
+            const numComp = (acc && acc.type === 'VEC3') ? 3 : 4;
+            const primCol = extractAccessorTypedArray(gltf, colIdx, arrayBuffer, binBaseOffset, numComp, Float32Array);
+            if (numComp === 4) {
+                col.set(primCol, vStart * 4);
+            } else {
+                for (let i = 0; i < vertCount; i++) {
+                    const dstOff = (vStart + i) * 4;
+                    const srcOff = i * 3;
+                    col[dstOff + 0] = primCol[srcOff + 0];
+                    col[dstOff + 1] = primCol[srcOff + 1];
+                    col[dstOff + 2] = primCol[srcOff + 2];
+                    col[dstOff + 3] = 1.0;
+                }
+            }
+        } else {
+            for (let i = 0; i < vertCount; i++) {
+                const off = (vStart + i) * 4;
+                col[off + 0] = 1.0;
+                col[off + 1] = 1.0;
+                col[off + 2] = 1.0;
+                col[off + 3] = (uvIdx !== undefined) ? 0.0 : 1.0;
+            }
+        }
+
+        // EMISSION
+        let matEmission = 0.0;
+        if (desc.materialIdx !== undefined && gltf.materials && gltf.materials[desc.materialIdx]) {
+            const mat = gltf.materials[desc.materialIdx];
+            if (mat.emissiveFactor) {
+                const ef = mat.emissiveFactor;
+                if (ef[0] > 0.01 || ef[1] > 0.01 || ef[2] > 0.01) {
+                    matEmission = (ef[0] + ef[1] + ef[2]) / 3.0 * 3.0;
+                }
+            }
+        }
+
+        const emIdx = attrs._EMISSION !== undefined ? attrs._EMISSION
+                    : (attrs.EMISSION !== undefined ? attrs.EMISSION
+                    : attrs._EMISSION_FACTOR);
+        if (emIdx !== undefined) {
+            const primEm = extractAccessorTypedArray(gltf, emIdx, arrayBuffer, binBaseOffset, 1, Float32Array);
+            em.set(primEm, vStart);
+        } else if (matEmission > 0.0) {
+            em.fill(matEmission, vStart, vStart + vertCount);
+        }
+
+        // INDICES
+        if (desc.indicesAccIdx !== undefined) {
+            const acc = gltf.accessors[desc.indicesAccIdx];
+            let primIndices;
+            if (acc.componentType === 5125) {
+                primIndices = extractAccessorTypedArray(gltf, desc.indicesAccIdx, arrayBuffer, binBaseOffset, 1, Uint32Array);
+            } else if (acc.componentType === 5123) {
+                primIndices = extractAccessorTypedArray(gltf, desc.indicesAccIdx, arrayBuffer, binBaseOffset, 1, Uint16Array);
+            } else {
+                primIndices = extractAccessorTypedArray(gltf, desc.indicesAccIdx, arrayBuffer, binBaseOffset, 1, Uint8Array);
+            }
+            if (vStart === 0) {
+                indices.set(primIndices, iStart);
+            } else {
+                for (let k = 0; k < primIndices.length; k++) {
+                    indices[iStart + k] = vStart + primIndices[k];
+                }
+            }
+        } else {
+            for (let k = 0; k < vertCount; k++) {
+                indices[iStart + k] = vStart + k;
+            }
+        }
+
+        submeshes.push({
+            name: meshName || `mesh_${meshIdx}_prim_${primIdx}`,
+            meshIndex: meshIdx,
+            primIndex: primIdx,
+            vertexStart: vStart,
+            vertexCount: vertCount,
+            indexStart: iStart,
+            indexCount: idxCount,
+            isBuilding,
+        });
+
+        vertWriteOffset += vertCount;
+        idxWriteOffset += idxCount;
+    }
+
+    // Identify building sub-mesh geometry from matIDs (color alpha)
+    // 0.35 = Roofs, 1.00 = Facades/Walls, 1.14 = Rolcar Stucco, 1.18 = Rolling Steel Shutters
+    const buildingTriIndices = [];
+    const nonBuildingTriIndices = [];
+    for (let i = 0; i < indices.length; i += 3) {
+        const i0 = indices[i];
+        const i1 = indices[i + 1];
+        const i2 = indices[i + 2];
+        const m0 = col[i0 * 4 + 3];
+        const m1 = col[i1 * 4 + 3];
+        const m2 = col[i2 * 4 + 3];
+        const avgMat = (m0 + m1 + m2) / 3.0;
+        const isBldg = (avgMat > 0.30 && avgMat < 0.40) ||
+                       (avgMat > 0.98 && avgMat < 1.05) ||
+                       (avgMat > 1.10 && avgMat < 1.25);
+        if (isBldg) {
+            buildingTriIndices.push(i0, i1, i2);
+        } else {
+            nonBuildingTriIndices.push(i0, i1, i2);
+        }
+    }
+
+    const buildingIndices = buildingTriIndices.length > 0
+        ? (useUint32 ? new Uint32Array(buildingTriIndices) : new Uint16Array(buildingTriIndices))
+        : null;
+
+    if (submeshes.length === 1 && !submeshes[0].isBuilding && buildingTriIndices.length > 0) {
+        const nonBuildingIndices = useUint32
+            ? new Uint32Array(nonBuildingTriIndices)
+            : new Uint16Array(nonBuildingTriIndices);
+        submeshes[0].name = 'sector_terrain';
+        submeshes[0].indexCount = nonBuildingTriIndices.length;
+        submeshes[0].customIndices = nonBuildingIndices;
+        submeshes[0].isBuilding = false;
+
+        submeshes.push({
+            name: 'sector_buildings',
+            meshIndex: 0,
+            primIndex: 1,
+            vertexStart: 0,
+            vertexCount: totalVertexCount,
+            indexStart: 0,
+            indexCount: buildingTriIndices.length,
+            isBuilding: true,
+            customIndices: buildingIndices,
+        });
     }
 
     return {
@@ -240,8 +456,10 @@ function parseGLB(arrayBuffer) {
         em,
         indices,
         indexFormat,
-        vertexCount,
-        indexCount: indices.length,
+        vertexCount: totalVertexCount,
+        indexCount: totalIndexCount,
+        submeshes,
+        buildingIndices,
     };
 }
 
@@ -678,6 +896,7 @@ async function main() {
         carsEnabled: true,
         carCount: 50,
         simSpeed: 0.05,
+        renderMode: 'all',
     };
 
     // Allocate memory for dynamic simulated cars (50 cars x 24 B = 1,200 bytes at 0x9000)
@@ -857,6 +1076,11 @@ async function main() {
         } else if (e.code === 'KeyK') {
             state.cullingEnabled = !state.cullingEnabled;
             showToast(state.cullingEnabled ? 'Frustum Culling WASM: ON' : 'Frustum Culling WASM: OFF');
+        } else if (e.code === 'KeyB') {
+            state.renderMode = (state.renderMode === 'buildings') ? 'all' : 'buildings';
+            showToast(state.renderMode === 'buildings'
+                ? 'Pipeline Edificios: Solo Edificios (WebGPU)'
+                : 'Pipeline Edificios: Escena Completa (Terreno + Edificios)');
         } else if (e.code === 'KeyT') {
             state.presetIdx = (state.presetIdx + 1) % TIME_PRESETS.length;
             state.simHour = TIME_PRESETS[state.presetIdx].hour;
@@ -1052,6 +1276,16 @@ async function main() {
     document.getElementById('btn-cull')?.addEventListener('click', () => {
         state.cullingEnabled = !state.cullingEnabled;
         showToast(state.cullingEnabled ? 'Culling WASM: ON' : 'Culling WASM: OFF');
+    });
+    document.getElementById('btn-buildings')?.addEventListener('click', () => {
+        state.renderMode = (state.renderMode === 'buildings') ? 'all' : 'buildings';
+        showToast(state.renderMode === 'buildings'
+            ? 'Pipeline Edificios: Solo Edificios (WebGPU)'
+            : 'Pipeline Edificios: Escena Completa (Terreno + Edificios)');
+    });
+    document.getElementById('pause-toggle-buildings')?.addEventListener('click', () => {
+        state.renderMode = (state.renderMode === 'buildings') ? 'all' : 'buildings';
+        logPause(`🏢 Modo Render: ${state.renderMode === 'buildings' ? 'Solo Edificios (WebGPU Pipeline)' : 'Escena Completa'}`);
     });
 
     // 7. Frame Loop
@@ -1346,6 +1580,7 @@ async function main() {
             clearColor,
             cullFlagsBySector,
             cullingEnabled: state.cullingEnabled,
+            renderMode: state.renderMode || 'all',
         });
 
         // Background nearby sector streaming check every 0.5s

@@ -301,7 +301,7 @@ class TestWebClientAssets(unittest.TestCase):
     def test_web_assets_structural_markers(self):
         with open(os.path.join(WEB_DIR, "shaders.wgsl"), "r", encoding="utf-8") as f:
             wgsl = f.read()
-        for token in ("@vertex", "@fragment", "struct Uniforms", "1.14", "1.18", "u.params.z"):
+        for token in ("@vertex", "@fragment", "struct Uniforms", "1.14", "1.18", "vs_building", "fs_building"):
             self.assertIn(token, wgsl)
 
         with open(os.path.join(WEB_DIR, "app.js"), "r", encoding="utf-8") as f:
@@ -312,8 +312,8 @@ class TestWebClientAssets(unittest.TestCase):
             "WebGL2Renderer",
             "cull_chunks",
             "sector_0_0.glb",
-            "MEM_POS_PTR = 0x0004",
-            "KeyY",
+            "submeshes",
+            "buildingIndices",
         ):
             self.assertIn(token, app_js)
 
@@ -326,6 +326,8 @@ class TestWebClientAssets(unittest.TestCase):
             wgpu_js = f.read()
         self.assertIn("export class WebGPURenderer", wgpu_js)
         self.assertIn("navigator.gpu", wgpu_js)
+        self.assertIn("buildingPipeline", wgpu_js)
+        self.assertIn("renderBuildings", wgpu_js)
 
         with open(os.path.join(WEB_DIR, "renderer_webgl2.js"), "r", encoding="utf-8") as f:
             self.assertIn("export class WebGL2Renderer", f.read())
@@ -378,6 +380,352 @@ class TestWebClientAssets(unittest.TestCase):
                 ]
                 proc = subprocess.run(check_cmd, capture_output=True, text=True)
             self.assertEqual(proc.returncode, 0, f"Syntax check failed for {fname}: {proc.stderr}\n{proc.stdout}")
+
+    def test_webgpu_building_pipeline_and_glb_parser(self):
+        """Verify that GLB parser extracts building submeshes, attributes, and indices from engine buffers."""
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node is not installed in PATH")
+
+        sector00_path = os.path.join(ROOT, "models", "sectors", "sector_0_0.glb")
+        self.assertTrue(os.path.isfile(sector00_path), f"Missing {sector00_path}")
+
+        node_script = """
+const fs = require('fs');
+const appContent = fs.readFileSync('web/app.js', 'utf-8');
+const m1 = appContent.indexOf('function extractAccessorTypedArray');
+const m2 = appContent.indexOf('function generateFallbackFacadeRGBA');
+const fnCode = appContent.slice(m1, m2);
+
+const vm = require('vm');
+const ctx = vm.createContext({ DataView, Uint8Array, Uint16Array, Uint32Array, Float32Array, TextDecoder, Math });
+vm.runInContext(fnCode, ctx);
+
+// 1. Test parsing sector_0_0.glb
+const glbBuf = fs.readFileSync('models/sectors/sector_0_0.glb');
+const arrayBuf = glbBuf.buffer.slice(glbBuf.byteOffset, glbBuf.byteOffset + glbBuf.byteLength);
+const parsed = ctx.parseGLB(arrayBuf);
+
+// 2. Test synthetic multi-mesh GLB with separate building primitive
+function buildMultiMeshGlb() {
+    const tPos = new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    const tNorm = new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]);
+    const tUv = new Float32Array([0, 0, 1, 0, 0, 1]);
+    const tCol = new Float32Array([0.5, 0.5, 0.5, 0.0, 0.5, 0.5, 0.5, 0.0, 0.5, 0.5, 0.5, 0.0]);
+    const tEm = new Float32Array([0, 0, 0]);
+    const tIdx = new Uint16Array([0, 1, 2]);
+
+    const bPos = new Float32Array([10, 0, 0, 10, 5, 0, 10, 0, 5]);
+    const bNorm = new Float32Array([1, 0, 0, 1, 0, 0, 1, 0, 0]);
+    const bUv = new Float32Array([0, 0, 0, 1, 1, 0]);
+    const bCol = new Float32Array([0.9, 0.8, 0.7, 1.0, 0.9, 0.8, 0.7, 1.0, 0.9, 0.8, 0.7, 1.0]);
+    const bEm = new Float32Array([0.5, 0.5, 0.5]);
+    const bIdx = new Uint16Array([0, 1, 2]);
+
+    const parts = [tPos, tNorm, tUv, tCol, tEm, tIdx, bPos, bNorm, bUv, bCol, bEm, bIdx];
+    let totalBinBytes = 0;
+    const bviews = [];
+    for (let i = 0; i < parts.length; i++) {
+        let bLen = parts[i].byteLength;
+        bviews.push({ buffer: 0, byteOffset: totalBinBytes, byteLength: bLen });
+        totalBinBytes += (bLen + 3) & ~3;
+    }
+
+    const binBuf = new Uint8Array(totalBinBytes);
+    let curOff = 0;
+    for (let i = 0; i < parts.length; i++) {
+        binBuf.set(new Uint8Array(parts[i].buffer, parts[i].byteOffset, parts[i].byteLength), curOff);
+        curOff += (parts[i].byteLength + 3) & ~3;
+    }
+
+    const gltfObj = {
+        asset: { version: '2.0' },
+        meshes: [
+            { name: 'terrain_ground', primitives: [{ attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2, COLOR_0: 3, _EMISSION: 4 }, indices: 5 }] },
+            { name: 'commercial_building_3d', primitives: [{ attributes: { POSITION: 6, NORMAL: 7, TEXCOORD_0: 8, COLOR_0: 9, _EMISSION: 10 }, indices: 11 }] }
+        ],
+        accessors: [
+            { bufferView: 0, count: 3, componentType: 5126, type: 'VEC3' },
+            { bufferView: 1, count: 3, componentType: 5126, type: 'VEC3' },
+            { bufferView: 2, count: 3, componentType: 5126, type: 'VEC2' },
+            { bufferView: 3, count: 3, componentType: 5126, type: 'VEC4' },
+            { bufferView: 4, count: 3, componentType: 5126, type: 'SCALAR' },
+            { bufferView: 5, count: 3, componentType: 5123, type: 'SCALAR' },
+            { bufferView: 6, count: 3, componentType: 5126, type: 'VEC3' },
+            { bufferView: 7, count: 3, componentType: 5126, type: 'VEC3' },
+            { bufferView: 8, count: 3, componentType: 5126, type: 'VEC2' },
+            { bufferView: 9, count: 3, componentType: 5126, type: 'VEC4' },
+            { bufferView: 10, count: 3, componentType: 5126, type: 'SCALAR' },
+            { bufferView: 11, count: 3, componentType: 5123, type: 'SCALAR' },
+        ],
+        bufferViews: bviews,
+        buffers: [{ byteLength: totalBinBytes }]
+    };
+
+    const jsonStr = JSON.stringify(gltfObj);
+    let jsonBytes = Buffer.from(jsonStr, 'utf-8');
+    while (jsonBytes.length % 4 !== 0) jsonBytes = Buffer.concat([jsonBytes, Buffer.from(' ')]);
+
+    const totalLen = 12 + 8 + jsonBytes.length + 8 + totalBinBytes;
+    const header = Buffer.alloc(12);
+    header.write('glTF', 0, 4, 'ascii');
+    header.writeUInt32LE(2, 4);
+    header.writeUInt32LE(totalLen, 8);
+
+    const chunk0 = Buffer.alloc(8);
+    chunk0.writeUInt32LE(jsonBytes.length, 0);
+    chunk0.writeUInt32LE(0x4E4F534A, 4);
+
+    const chunk1 = Buffer.alloc(8);
+    chunk1.writeUInt32LE(totalBinBytes, 0);
+    chunk1.writeUInt32LE(0x004E4942, 4);
+
+    const outGlb = Buffer.concat([header, chunk0, jsonBytes, chunk1, Buffer.from(binBuf.buffer)]);
+    return outGlb.buffer.slice(outGlb.byteOffset, outGlb.byteOffset + outGlb.byteLength);
+}
+
+const multiGlbBuf = buildMultiMeshGlb();
+const multiParsed = ctx.parseGLB(multiGlbBuf);
+
+process.stdout.write(JSON.stringify({
+    sector: {
+        vertCount: parsed.vertexCount,
+        idxCount: parsed.indexCount,
+        posLen: parsed.pos.length,
+        colLen: parsed.col.length,
+        emLen: parsed.em.length,
+        submeshesCount: parsed.submeshes.length,
+        buildingIndicesCount: parsed.buildingIndices ? parsed.buildingIndices.length : 0,
+        hasBuildingSubmesh: parsed.submeshes.some(s => s.isBuilding),
+        submeshes: parsed.submeshes.map(s => ({ name: s.name, indexCount: s.indexCount, isBuilding: s.isBuilding }))
+    },
+    multi: {
+        vertCount: multiParsed.vertexCount,
+        idxCount: multiParsed.indexCount,
+        submeshes: multiParsed.submeshes,
+        indices: Array.from(multiParsed.indices)
+    }
+}));
+"""
+        proc = subprocess.run(
+            [node_bin, "-e", node_script],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, f"Node probe failed:\n{proc.stderr}\n{proc.stdout}")
+        data = json.loads(proc.stdout)
+
+        # Assertions on sector_0_0.glb
+        sec = data["sector"]
+        self.assertEqual(sec["vertCount"], 1299591)
+        self.assertEqual(sec["posLen"], 1299591 * 3)
+        self.assertEqual(sec["colLen"], 1299591 * 4)
+        self.assertEqual(sec["emLen"], 1299591)
+        self.assertEqual(sec["buildingIndicesCount"], 457395)
+        self.assertTrue(sec["hasBuildingSubmesh"])
+        self.assertEqual(sec["submeshesCount"], 2)
+        sub0 = sec["submeshes"][0]
+        sub1 = sec["submeshes"][1]
+        self.assertEqual(sub0["name"], "sector_terrain")
+        self.assertFalse(sub0["isBuilding"])
+        self.assertEqual(sub0["indexCount"], 842196)
+        self.assertEqual(sub1["name"], "sector_buildings")
+        self.assertTrue(sub1["isBuilding"])
+        self.assertEqual(sub1["indexCount"], 457395)
+        self.assertEqual(sub0["indexCount"] + sub1["indexCount"], sec["idxCount"])
+
+        # Assertions on synthetic multi-mesh GLB
+        multi = data["multi"]
+        self.assertEqual(multi["vertCount"], 6)
+        self.assertEqual(multi["idxCount"], 6)
+        self.assertEqual(len(multi["submeshes"]), 2)
+        self.assertFalse(multi["submeshes"][0]["isBuilding"])
+        self.assertTrue(multi["submeshes"][1]["isBuilding"])
+        self.assertEqual(multi["indices"], [0, 1, 2, 3, 4, 5])
+
+    def test_webgpu_renderer_pipeline_execution_and_culling(self):
+        """Verify WebGPURenderer chunk culling, buildingPipeline draw calls, and vertex buffer de-interleaving."""
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node is not installed in PATH")
+
+        node_script = """
+globalThis.GPUBufferUsage = { VERTEX: 1, INDEX: 2, UNIFORM: 4, COPY_DST: 8 };
+globalThis.GPUShaderStage = { VERTEX: 1, FRAGMENT: 2 };
+globalThis.GPUTextureUsage = { TEXTURE_BINDING: 1, COPY_DST: 2, RENDER_ATTACHMENT: 4 };
+
+const { WebGPURenderer } = await import('./web/renderer_webgpu.js');
+
+class MockBuffer {
+    constructor(size, label) { this.size = size; this.label = label; }
+    destroy() {}
+}
+class MockDevice {
+    createBuffer(desc) { return new MockBuffer(desc.size, desc.label); }
+    createTexture() { return { createView: () => ({}), destroy: () => {} }; }
+    createSampler() { return {}; }
+    get queue() { return { writeBuffer: () => {}, writeTexture: () => {}, submit: () => {} }; }
+}
+class MockPass {
+    constructor() { this.draws = []; this.pipeline = null; this.indexBuf = null; }
+    setPipeline(p) { this.pipeline = p; }
+    setBindGroup() {}
+    setVertexBuffer() {}
+    setIndexBuffer(b, f) { this.indexBuf = { b, f }; }
+    drawIndexed(count, inst, start, baseV, baseI) {
+        this.draws.push({ count, start, pipeline: this.pipeline, indexBuf: this.indexBuf });
+    }
+    end() {}
+}
+
+const renderer = new WebGPURenderer();
+renderer.device = new MockDevice();
+renderer.pipeline = 'PIPELINE_MAIN';
+renderer.buildingPipeline = 'PIPELINE_BUILDING';
+renderer.bindGroup = {};
+renderer.uniformBuffer = new MockBuffer(2272, 'Uniforms');
+renderer.canvas = { width: 800, height: 600 };
+renderer.context = { getCurrentTexture: () => ({ createView: () => ({}) }) };
+renderer.depthTexture = { createView: () => ({}), destroy: () => {} };
+
+// 1. Verify 52B engine struct buffer de-interleaving (13 floats per vertex)
+const engineVerts = new Float32Array([
+    1, 2, 3,  0, 1, 0,  0.5, 0.5,  0.8, 0.8, 0.8, 1.0,  0.0,
+    4, 5, 6,  0, 1, 0,  0.1, 0.2,  0.9, 0.9, 0.9, 0.35, 1.5,
+]);
+renderer.uploadSector('sec_inter', { interleaved: engineVerts, vertexCount: 2 }, []);
+const secInter = renderer.sectors.get('sec_inter');
+const deinterleavedOk = (
+    secInter.posBuf.size === 24 &&
+    secInter.normBuf.size === 24 &&
+    secInter.uvBuf.size === 16 &&
+    secInter.colBuf.size === 32 &&
+    secInter.emBuf.size === 8 &&
+    secInter.indexCount === 2
+);
+renderer.unloadSector('sec_inter');
+
+// 2. Verify chunked sector rendering with frustum culling
+const fakeChunks = Array.from({ length: 64 }, (_, i) => ({ start: i * 1000, count: 1000 }));
+const chunkMeshData = {
+    pos: new Float32Array(30), norm: new Float32Array(30), uv: new Float32Array(20),
+    col: new Float32Array(40), em: new Float32Array(10),
+    indices: new Uint32Array(64000), indexFormat: 'uint32',
+    vertexCount: 10, indexCount: 64000,
+    buildingIndices: new Uint32Array(15000),
+    submeshes: [
+        { name: 'sector_terrain', indexStart: 0, indexCount: 49000, isBuilding: false },
+        { name: 'sector_buildings', indexStart: 0, indexCount: 15000, isBuilding: true }
+    ]
+};
+renderer.uploadSector('sec_chunked', chunkMeshData, fakeChunks);
+
+let pass = new MockPass();
+renderer.device.createCommandEncoder = () => ({ beginRenderPass: () => pass, finish: () => ({}) });
+
+const cullFlags = new Uint8Array(64);
+for (let i = 0; i < 20; i++) cullFlags[i] = 1; // 20 chunks visible, 44 culled
+
+const statsNorm = renderer.render({
+    uniformBufferData: new Float32Array(568),
+    clearColor: [0, 0, 0],
+    cullFlagsBySector: new Map([['sec_chunked', cullFlags]]),
+    cullingEnabled: true
+});
+
+const chunksOk = (
+    statsNorm.visibleChunks === 20 &&
+    statsNorm.totalChunks === 64 &&
+    statsNorm.drawCalls === 20 &&
+    pass.draws.length === 20 &&
+    pass.draws.every(d => d.pipeline === 'PIPELINE_MAIN')
+);
+
+// 3. Verify renderMode === 'buildings' switches to buildingPipeline
+pass = new MockPass();
+const statsBldg = renderer.render({
+    uniformBufferData: new Float32Array(568),
+    clearColor: [0, 0, 0],
+    cullingEnabled: true,
+    renderMode: 'buildings'
+});
+const bldgModeOk = (
+    statsBldg.drawCalls === 1 &&
+    statsBldg.visibleVerts === 15000 &&
+    pass.draws[0].pipeline === 'PIPELINE_BUILDING' &&
+    pass.draws[0].count === 15000
+);
+
+// 4. Verify dedicated renderBuildings API
+pass = new MockPass();
+const bldgCalls = renderer.renderBuildings(pass, 'sec_chunked');
+const renderBuildingsOk = (
+    bldgCalls === 1 &&
+    pass.pipeline === 'PIPELINE_BUILDING' &&
+    pass.draws[0].count === 15000
+);
+
+// 5. Verify sector without buildings produces 0 calls in renderBuildings
+renderer.unloadSector('sec_chunked');
+renderer.uploadSector('sec_nobldg', {
+    pos: new Float32Array(9), norm: new Float32Array(9), uv: new Float32Array(6),
+    col: new Float32Array(12), em: new Float32Array(3),
+    indices: new Uint16Array([0, 1, 2]), indexFormat: 'uint16',
+    vertexCount: 3, indexCount: 3,
+    submeshes: [{ name: 'terrain_only', isBuilding: false, indexStart: 0, indexCount: 3 }]
+}, []);
+pass = new MockPass();
+const noBldgCalls = renderer.renderBuildings(pass, 'sec_nobldg');
+renderer.unloadSector('sec_nobldg');
+
+// 6. Verify multi-mesh GLB without chunks draws submeshes with respective pipelines
+renderer.uploadSector('sec_multi', {
+    pos: new Float32Array(18), norm: new Float32Array(18), uv: new Float32Array(12),
+    col: new Float32Array(24), em: new Float32Array(6),
+    indices: new Uint16Array([0, 1, 2, 3, 4, 5]), indexFormat: 'uint16',
+    vertexCount: 6, indexCount: 6,
+    submeshes: [
+        { name: 'terrain', isBuilding: false, indexStart: 0, indexCount: 3 },
+        { name: 'bldg', isBuilding: true, indexStart: 3, indexCount: 3 }
+    ]
+}, []);
+pass = new MockPass();
+renderer.render({
+    uniformBufferData: new Float32Array(568),
+    clearColor: [0, 0, 0],
+    cullFlagsBySector: new Map([['sec_multi', new Uint8Array([1])]]),
+    cullingEnabled: true
+});
+const multiOk = (
+    pass.draws.length === 2 &&
+    pass.draws[0].pipeline === 'PIPELINE_MAIN' && pass.draws[0].count === 3 &&
+    pass.draws[1].pipeline === 'PIPELINE_BUILDING' && pass.draws[1].count === 3
+);
+
+process.stdout.write(JSON.stringify({
+    deinterleavedOk,
+    chunksOk,
+    bldgModeOk,
+    renderBuildingsOk,
+    noBldgCalls,
+    multiOk
+}));
+"""
+        proc = subprocess.run(
+            [node_bin, "--input-type=module", "-e", node_script],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, f"Node probe failed:\n{proc.stderr}\n{proc.stdout}")
+        data = json.loads(proc.stdout)
+        self.assertTrue(data["deinterleavedOk"])
+        self.assertTrue(data["chunksOk"])
+        self.assertTrue(data["bldgModeOk"])
+        self.assertTrue(data["renderBuildingsOk"])
+        self.assertEqual(data["noBldgCalls"], 0)
+        self.assertTrue(data["multiOk"])
 
 
 class TestGitHubShowcaseRepo(unittest.TestCase):

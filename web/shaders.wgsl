@@ -59,6 +59,21 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+@vertex
+fn vs_building(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let worldPos4 = u.model * vec4<f32>(in.position, 1.0);
+    out.clipPos = u.mvp * worldPos4;
+    out.worldPos = worldPos4.xyz;
+    let n = (u.model * vec4<f32>(in.normal, 0.0)).xyz;
+    let nLenSq = dot(n, n);
+    out.normal = select(vec3<f32>(0.0, 1.0, 0.0), normalize(n), nLenSq > 1e-10);
+    out.texCoord = in.texCoord;
+    out.color = in.color;
+    out.emission = in.emission;
+    return out;
+}
+
 fn srgbToLinear(c: vec3<f32>) -> vec3<f32> {
     return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
 }
@@ -459,6 +474,224 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     color += emissionColor;
 
     // 7. ACES Filmic Tonemap + sRGB Gamma
+    color = ACESFilm(color);
+    color = linearToSrgb(color);
+    return vec4<f32>(color, 1.0);
+}
+
+// ============================================================================
+// Specialized Building Fragment Shader (WebGPU Building Pipeline)
+// Optimized for architectural materials: roofs (0.35), textured facades (1.0),
+// Rolcar stucco (1.14), rolling steel shutters (1.18), and night window glow.
+// ============================================================================
+@fragment
+fn fs_building(in: VertexOutput) -> @location(0) vec4<f32> {
+    // 1. Uniform control flow texture sampling
+    let satRaw = textureSample(satelliteTex, texSampler, in.texCoord);
+    let facRaw = textureSample(facadeTex, texSampler, in.texCoord);
+    let sat = vec4<f32>(srgbToLinear(satRaw.rgb), satRaw.a);
+    let fac = vec4<f32>(srgbToLinear(facRaw.rgb), facRaw.a);
+
+    // Direct emission pass-through for HUD/debug overlays
+    if (in.emission >= 9.5) {
+        return in.color;
+    }
+
+    let matID = in.color.a;
+    let camPos = u.camPos.xyz;
+    var N = normalize(in.normal);
+    let toCam = camPos - in.worldPos;
+    let camDistSq = dot(toCam, toCam);
+    let V = select(vec3<f32>(0.0, 1.0, 0.0), toCam * inverseSqrt(camDistSq), camDistSq > 1e-10);
+
+    var albedo: vec3<f32> = in.color.rgb;
+    var roughness: f32 = 0.72;
+    var metallic: f32 = 0.04;
+
+    // 1. Building Roofs (matID < 0.50, nominally 0.35)
+    if (matID < 0.50) {
+        albedo = mix(sat.rgb * 0.88, in.color.rgb, 0.15);
+        roughness = 0.80;
+        metallic = 0.05;
+    }
+    // 2. Textured Atlas Facades: Brick, Cantera, Window Grilles, Shopfronts (0.98 <= matID <= 1.02)
+    else if (matID >= 0.98 && matID <= 1.02 && in.emission < 0.1) {
+        if (fac.a < 0.25 && in.color.r > 0.92 && in.color.g > 0.92 && in.color.b > 0.92) {
+            discard;
+        }
+        albedo = mix(fac.rgb, in.color.rgb, 0.16);
+        roughness = 0.68;
+        metallic = 0.05;
+    }
+    // 3. Procedural Rolcar Architecture: Stucco/Signage (1.14) & Rolling Steel Shutters (1.18)
+    else if (matID >= 1.12 && matID <= 1.22) {
+        if (matID < 1.16) {
+            let stucco = noise2D(in.worldPos.xz * 6.0 + vec2<f32>(in.worldPos.y * 6.0)) * 0.025 - 0.012;
+            albedo = clamp(in.color.rgb + vec3<f32>(stucco), vec3<f32>(0.02), vec3<f32>(0.98));
+            roughness = 0.62;
+            metallic = 0.04;
+        } else {
+            let uv = clamp(in.texCoord, vec2<f32>(0.0), vec2<f32>(1.0));
+            let isRail = (uv.x < 0.035 || uv.x > 0.965);
+            let isHood = (uv.y < 0.13);
+            let isBottomBar = (uv.y > 0.93);
+            if (isRail || isHood || isBottomBar) {
+                albedo = select(vec3<f32>(0.32, 0.35, 0.36), vec3<f32>(0.24, 0.27, 0.28), isHood);
+                roughness = 0.42;
+                metallic = 0.65;
+            } else {
+                let slatPhase = fract(uv.y * 26.0);
+                let rib = sin(slatPhase * 6.2831853) * 0.08;
+                let seam = smoothstep(0.08, 0.16, slatPhase) * (1.0 - smoothstep(0.86, 0.96, slatPhase));
+                let metalGrain = noise2D(vec2<f32>(uv.x * 32.0, uv.y * 120.0)) * 0.03 - 0.015;
+                var steelCol = vec3<f32>(0.48, 0.51, 0.53) * (0.78 + 0.22 * seam) + vec3<f32>(rib + metalGrain);
+                if (abs(uv.x - 0.5) < 0.018 && uv.y > 0.80 && uv.y < 0.91) {
+                    steelCol = vec3<f32>(0.18, 0.20, 0.21);
+                }
+                albedo = clamp(steelCol, vec3<f32>(0.12), vec3<f32>(0.82));
+                roughness = 0.34;
+                metallic = 0.74;
+            }
+        }
+    } else {
+        albedo = in.color.rgb;
+        roughness = 0.75;
+        metallic = 0.0;
+    }
+
+    var F0 = vec3<f32>(0.04);
+    F0 = mix(F0, albedo, metallic);
+
+    var Lo = vec3<f32>(0.0);
+
+    // Directional Sun PBR Cook-Torrance
+    let L_sun = normalize(u.sunDir.xyz);
+    let H_sun = normalize(V + L_sun);
+    let NdotL_sun = max(dot(N, L_sun), 0.0);
+
+    if (NdotL_sun > 0.0) {
+        let NDF = DistributionGGX(N, H_sun, roughness);
+        let G = GeometrySmith(N, V, L_sun, roughness);
+        let F = FresnelSchlick(max(dot(H_sun, V), 0.0), F0);
+
+        let numerator = NDF * G * F;
+        let denominator = 4.0 * max(dot(N, V), 0.0) * NdotL_sun + 0.0001;
+        let specular = clamp(numerator / denominator, vec3<f32>(0.0), vec3<f32>(0.85));
+
+        let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+        let sunRadiance = vec3<f32>(1.2, 1.15, 1.05) * max(u.sunDir.y * 1.5 + 0.2, 0.0);
+        Lo += (kD * albedo / PI + specular) * sunRadiance * NdotL_sun;
+    }
+
+    // Dynamic Point Lights (Streets, storefronts, and architectural illumination)
+    let lightCount = min(i32(u.params.x), 64);
+    for (var i: i32 = 0; i < lightCount; i = i + 1) {
+        let radius = u.lights[i].posRadius.w;
+        let intensity = u.lights[i].colorIntensity.w;
+        if (radius <= 0.0 || intensity <= 0.0) {
+            continue;
+        }
+
+        let toLight = u.lights[i].posRadius.xyz - in.worldPos;
+        let distSq = dot(toLight, toLight);
+        if (distSq >= radius * radius || distSq <= 1e-6) {
+            continue;
+        }
+
+        let d = sqrt(distSq);
+        let L_point = toLight / d;
+        var NdotL_p = max(dot(N, L_point), 0.0);
+        if (abs(N.y) > 0.35) {
+            NdotL_p = max(NdotL_p, 0.35);
+        }
+        if (NdotL_p <= 0.0) {
+            continue;
+        }
+
+        let lCol = u.lights[i].colorIntensity.rgb;
+        let H_point = normalize(V + L_point);
+
+        var atten = clamp(1.0 - (d / radius), 0.0, 1.0);
+        atten = atten * atten;
+
+        let NDF = DistributionGGX(N, H_point, roughness);
+        let G = GeometrySmith(N, V, L_point, roughness);
+        let F = FresnelSchlick(max(dot(H_point, V), 0.0), F0);
+
+        let numerator = NDF * G * F;
+        let denominator = 4.0 * max(dot(N, V), 0.0) * NdotL_p + 0.0001;
+        let specular = clamp(numerator / denominator, vec3<f32>(0.0), vec3<f32>(0.85));
+
+        let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+        let radiance = lCol * (intensity * atten);
+        Lo += (kD * albedo / PI + specular) * radiance * NdotL_p;
+    }
+
+    // Inspection flashlight spotlight
+    if (u.params.y > 0.5) {
+        let toFrag = in.worldPos - u.flashPos.xyz;
+        let distSq = dot(toFrag, toFrag);
+        let flashRange = u.flashPos.w;
+        if (distSq < flashRange * flashRange && distSq > 0.04) {
+            let d = sqrt(distSq);
+            let L_flash = normalize(-toFrag);
+            let dir = toFrag / d;
+            let cosAngle = dot(dir, normalize(u.flashDir.xyz));
+            let spotCutoff = u.flashDir.w;
+            if (cosAngle > spotCutoff) {
+                let spotFactor = smoothstep(spotCutoff, spotCutoff + 0.08, cosAngle);
+                var atten = clamp(1.0 - (d / flashRange), 0.0, 1.0);
+                atten = atten * atten;
+                var NdotL_f = max(dot(N, L_flash), 0.0);
+                if (abs(N.y) > 0.35) {
+                    NdotL_f = max(NdotL_f, 0.35);
+                }
+                if (NdotL_f > 0.0) {
+                    let H_flash = normalize(V + L_flash);
+                    let NDF = DistributionGGX(N, H_flash, roughness);
+                    let G = GeometrySmith(N, V, L_flash, roughness);
+                    let F = FresnelSchlick(max(dot(H_flash, V), 0.0), F0);
+                    let specular = clamp((NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * NdotL_f + 0.0001), vec3<f32>(0.0), vec3<f32>(0.85));
+                    let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+                    let radiance = vec3<f32>(1.0, 0.98, 0.92) * (5.0 * atten * spotFactor);
+                    Lo += (kD * albedo / PI + specular) * radiance * NdotL_f;
+                }
+            }
+        }
+    }
+
+    // Ambient sky IBL
+    let ambientSky = u.skyColor.rgb * u.sunDir.w;
+    let F_ambient = FresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
+    let kD_amb = (vec3<f32>(1.0) - F_ambient) * (1.0 - metallic);
+    let ambient = (kD_amb * albedo * ambientSky * 0.85) + (F_ambient * ambientSky * (1.0 - roughness) * 0.20);
+
+    var color = ambient + Lo;
+
+    // Atmospheric distance fog
+    let dist = length(camPos - in.worldPos);
+    let fog = clamp((dist - 2000.0) / 16000.0, 0.0, 0.50);
+    let rayDir = select(vec3<f32>(0.0, 1.0, 0.0), normalize(in.worldPos - camPos), dist > 1e-4);
+    var sky = getAtmosphericSky(rayDir, L_sun);
+    sky = mix(sky, u.skyColor.rgb, 0.4);
+    color = mix(color, sky, fog * 0.45);
+
+    // Direct PBR emission for illuminated building windows and storefront signage
+    let nightFactor = u.skyColor.a;
+    var emissionColor = vec3<f32>(0.0);
+    if (in.emission >= 4.0) {
+        emissionColor = in.color.rgb * (4.0 + in.emission * 1.5);
+    } else if (in.emission > 0.5) {
+        let keepColor = (matID >= 1.12 && matID <= 1.22);
+        let glowCol = select(vec3<f32>(1.0, 0.94, 0.72), in.color.rgb, keepColor);
+        let distPreserve = clamp(dist / 200.0, 1.0, 3.5);
+        emissionColor = glowCol * (in.emission * (1.8 + nightFactor * 3.0) * distPreserve);
+    } else if (in.emission > 0.0) {
+        emissionColor = in.color.rgb * (in.emission * (1.0 + nightFactor * 2.2));
+    }
+    color += emissionColor;
+
+    // ACES Filmic Tonemap + sRGB Gamma
     color = ACESFilm(color);
     color = linearToSrgb(color);
     return vec4<f32>(color, 1.0);
