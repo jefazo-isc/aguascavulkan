@@ -65,22 +65,6 @@ def geo_to_meters(lat, lon, ref_lat=ORIGIN_LAT, ref_lon=ORIGIN_LON):
     z = -r_earth * d_phi
     return x, z
 
-def point_in_polygon(x, z, poly):
-    n = len(poly)
-    inside = False
-    p1x, p1z = poly[0]
-    for i in range(n + 1):
-        p2x, p2z = poly[i % n]
-        if z > min(p1z, p2z):
-            if z <= max(p1z, p2z):
-                if x <= max(p1x, p2x):
-                    if p1z != p2z:
-                        xinters = (z - p1z) * (p2x - p1x) / (p2z - p1z) + p1x
-                    if p1x == p2x or x <= xinters:
-                        inside = not inside
-        p1x, p1z = p2x, p2z
-    return inside
-
 def load_osm_data(osm_path=None):
     if osm_path is None:
         osm_path = BASE_DIR / "models" / "osm_cache.xml"
@@ -283,6 +267,17 @@ def classify_all_buildings():
     poi_grid = SpatialGrid2D(cell_size=30.0)
     for p in osm_pois:
         poi_grid.insert(p['x'], p['z'], {'x': p['x'], 'z': p['z'], 'name': p['name'], 'activity': p['amenity'] or p['shop'], 'source': 'OSM'})
+    for wb in way_buildings:
+        tags = wb.get('tags', {})
+        activity = tags.get('amenity') or tags.get('shop') or tags.get('office') or (
+            tags.get('building') if tags.get('building') not in (None, '', 'yes') else ''
+        )
+        name = tags.get('name', '')
+        if name or activity:
+            poi_grid.insert(wb['cx'], wb['cz'], {
+                'x': wb['cx'], 'z': wb['cz'],
+                'name': name, 'activity': activity, 'source': 'OSM'
+            })
     for d in denue_records:
         poi_grid.insert(d['x'], d['z'], {'x': d['x'], 'z': d['z'], 'name': d['name'], 'activity': d['activity'], 'source': 'DENUE'})
 
@@ -320,50 +315,59 @@ def classify_all_buildings():
 
             poly_geo = coords[0]
             poly_m = [geo_to_meters(lat, lon) for lon, lat in poly_geo]
-            if not poly_m: continue
+            if not poly_m:
+                continue
 
             cx = sum(p[0] for p in poly_m) / len(poly_m)
             cz = sum(p[1] for p in poly_m) / len(poly_m)
 
-        # Área del polígono
-        n = len(poly_m)
-        area = 0.5 * abs(sum(poly_m[i][0] * poly_m[(i+1)%n][1] - poly_m[(i+1)%n][0] * poly_m[i][1] for i in range(n)))
+            # Área del polígono
+            n = len(poly_m)
+            area = 0.5 * abs(sum(poly_m[i][0] * poly_m[(i+1)%n][1] - poly_m[(i+1)%n][0] * poly_m[i][1] for i in range(n)))
 
-        # Estimación de altura
-        height = 4.0
-        props = feat.get("properties", {})
-        if "height" in props:
-            height = float(props["height"])
-        elif "building:levels" in props:
-            height = float(props["building:levels"]) * 3.2
+            # Estimación de altura
+            height = 4.0
+            props = feat.get("properties") or {}
+            if props.get("height") is not None:
+                try:
+                    height = float(props["height"])
+                except (ValueError, TypeError):
+                    pass
+            elif props.get("building:levels") is not None:
+                try:
+                    height = float(props["building:levels"]) * 3.2
+                except (ValueError, TypeError):
+                    pass
 
-        # Búsqueda espacial de POIs en radio de 18 metros
-        osm_matches = []
-        denue_matches = []
-        nearby_pois = poi_grid.query_radius(cx, cz, radius=18.0)
-        for poi in nearby_pois:
-            if poi['source'] == 'OSM':
-                osm_matches.append(poi)
-            else:
-                denue_matches.append(poi)
+            # Búsqueda espacial de POIs en radio de 18 metros
+            osm_matches = []
+            denue_matches = []
+            nearby_pois = poi_grid.query_radius(cx, cz, radius=18.0)
+            for poi in nearby_pois:
+                if poi['source'] == 'OSM':
+                    osm_matches.append(poi)
+                else:
+                    denue_matches.append(poi)
 
-        cat_info = categorize_building(props, area, height, osm_matches, denue_matches)
+            cat_info = categorize_building(props, area, height, osm_matches, denue_matches)
 
-        t = cat_info['type']
-        category_counts[t] = category_counts.get(t, 0) + 1
+            t = cat_info['type']
+            category_counts[t] = category_counts.get(t, 0) + 1
 
-        classified_results.append({
-            'id': idx,
-            'type': cat_info['type'],
-            'label': cat_info['label'],
-            'color': cat_info['color']
-        })
+            classified_results.append({
+                'id': idx,
+                'type': cat_info['type'],
+                'label': cat_info['label'],
+                'color': cat_info['color']
+            })
 
     out_json = BASE_DIR / "models" / "classified_buildings.json"
+    out_json.parent.mkdir(parents=True, exist_ok=True)
     print(f"\n[Classify] Resumen de Clasificación ({len(classified_results)} edificios):")
-    for k, v in sorted(category_counts.items(), key=lambda x: x[1], reverse=True):
-        pct = (v / len(classified_results)) * 100.0
-        print(f"  - {k:18s}: {v:5d} ({pct:5.1f}%)")
+    if classified_results:
+        for k, v in sorted(category_counts.items(), key=lambda x: x[1], reverse=True):
+            pct = (v / len(classified_results)) * 100.0
+            print(f"  - {k:18s}: {v:5d} ({pct:5.1f}%)")
 
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(classified_results, f, indent=2, ensure_ascii=False)
