@@ -369,6 +369,32 @@ def make_wall_obj(world_x, world_y, world_z, heading_deg,
     return lines, 4
 
 
+def make_box_obj(world_x, world_y, world_z, heading_deg,
+                 width_m, height_m, color_r, color_g, color_b, base_idx=1):
+    """Caja genérica orientada sobre el suelo para elementos sin generador específico."""
+    lines = ["usemtl wall"]
+    h = math.radians(heading_deg)
+    rx = math.cos(h)
+    rz = -math.sin(h)
+    w2 = max(0.1, float(width_m)) * 0.5
+    ht = max(0.1, float(height_m))
+    corners = [
+        (-w2, 0.0, -w2), (w2, 0.0, -w2), (w2, 0.0, w2), (-w2, 0.0, w2),
+        (-w2, ht, -w2),  (w2, ht, -w2),  (w2, ht, w2),  (-w2, ht, w2),
+    ]
+    for (lx, ly, lz) in corners:
+        gx = world_x + lx * rx + lz * rz
+        gy = world_y + ly
+        gz = world_z + lx * (-rz) + lz * rx
+        _v(lines, gx, gy, gz, (lx + w2) / (2.0 * w2), ly / ht)
+    b = base_idx
+    for face in [(b, b+1, b+5, b+4), (b+1, b+2, b+6, b+5), (b+2, b+3, b+7, b+6),
+                 (b+3, b, b+4, b+7), (b+4, b+5, b+6, b+7), (b, b+3, b+2, b+1)]:
+        lines.append(f"f {face[0]} {face[1]} {face[2]}")
+        lines.append(f"f {face[0]} {face[2]} {face[3]}")
+    return lines, 8
+
+
 def write_mtl_for_element(el: SceneElement):
     """Genera el contenido MTL para un elemento."""
     r, g, b = el.color_r, el.color_g, el.color_b
@@ -637,9 +663,9 @@ def extract_scene(
             )
         else:
             # Fallback: cubo genérico
-            geo_lines, total_verts = make_shrub_obj(
-                obj_x, obj_y, obj_z,
-                el.estimated_height_m, el.estimated_width_m,
+            geo_lines, total_verts = make_box_obj(
+                obj_x, obj_y, obj_z, heading,
+                el.estimated_width_m, el.estimated_height_m,
                 el.color_r, el.color_g, el.color_b,
                 base_idx=1
             )

@@ -272,7 +272,7 @@ def make_traffic_signal_3d(sig_id,inter_id,phase_group,x,ground_y,z,dir_angle=0.
     for name,ly,col in lens_configs:
         start_idx=len(verts); rad=0.10; norm=(ca,0.0,sa)
         p_front_x=head_x+0.15*ca; p_front_z=head_z+0.15*sa; p_perp_x=-sa*rad; p_perp_z=ca*rad
-        q0=(p_front_x-p_perp_x,ly-rad,p_front_z-p_perp_z); q1=(p_front_x+p_perp_x,ly-rad,p_front_z+p_perp_z); q2=(p_front_x+p_perp_x,ly+rad,p_front_z+p_perp_z); q3=(p_front_x-p_perp_x,ly+rad,p_front_z+p_perp_z)
+        q0=(p_front_x-p_perp_x,ly-rad,p_front_z-p_perp_z); q1=(p_front_x+p_perp_x,ly-rad,p_front_z+p_perp_z); q2=(p_front_x+p_perp_x,ly+rad,p_front_z+p_perp_z); q3=(p_front_x-p_perp_x,ly+rad,p_front_z-p_perp_z)
         verts.append((q0,norm,(0,0),col,0.0)); verts.append((q1,norm,(0,0),col,0.0)); verts.append((q2,norm,(0,0),col,0.0))
         verts.append((q0,norm,(0,0),col,0.0)); verts.append((q2,norm,(0,0),col,0.0)); verts.append((q3,norm,(0,0),col,0.0))
         lens_info[name]={"start":start_idx,"count":6}

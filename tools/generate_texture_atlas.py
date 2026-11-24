@@ -576,6 +576,8 @@ def generate_atlas():
 
     os.makedirs("models", exist_ok=True)
     os.makedirs("assets", exist_ok=True)
+    # Filename retained for runtime compatibility with src/vulkan_texture.c, web/app.js,
+    # and tools/prepare_github_wasm_repo.py while packing an 8x8 (512x512 px, 64x64 tile) atlas.
     out_models = "models/texture_atlas_16x16.png"
     out_assets = "assets/texture_atlas_16x16.png"
     atlas.save(out_models)

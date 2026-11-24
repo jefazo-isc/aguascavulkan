@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
-cd /home/yahir/vulkan
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 
 pkill -9 -f "./street_vulkan" || true
 sleep 1
@@ -23,23 +24,27 @@ sleep 2
 DISPLAY=:0 wmctrl -i -a "$WIN_ID" || DISPLAY=:0 wmctrl -a "StreetView Vulkan" || true
 sleep 1
 
-ART_DIR="/home/yahir/.gemini/antigravity-cli/brain/08ada0bf-55d8-4e57-b5f6-a6899b22a197"
-mkdir -p "$ART_DIR" captures
+CAPTURE_DIR="${CAPTURE_DIR:-$REPO_ROOT/captures}"
+ART_DIR="${ART_DIR:-}"
+mkdir -p "$CAPTURE_DIR"
+if [ -n "$ART_DIR" ]; then
+    mkdir -p "$ART_DIR"
+fi
 
-DISPLAY=:0 import -window root "$ART_DIR/captura_1.png"
-cp "$ART_DIR/captura_1.png" captures/captura_1.png
+DISPLAY=:0 import -window root "$CAPTURE_DIR/captura_1.png"
+if [ -n "$ART_DIR" ]; then cp "$CAPTURE_DIR/captura_1.png" "$ART_DIR/captura_1.png"; fi
 echo "[Captura 1/3] Completada"
 
 sleep 4
 DISPLAY=:0 wmctrl -i -a "$WIN_ID" || true
-DISPLAY=:0 import -window root "$ART_DIR/captura_2.png"
-cp "$ART_DIR/captura_2.png" captures/captura_2.png
+DISPLAY=:0 import -window root "$CAPTURE_DIR/captura_2.png"
+if [ -n "$ART_DIR" ]; then cp "$CAPTURE_DIR/captura_2.png" "$ART_DIR/captura_2.png"; fi
 echo "[Captura 2/3] Completada"
 
 sleep 4
 DISPLAY=:0 wmctrl -i -a "$WIN_ID" || true
-DISPLAY=:0 import -window root "$ART_DIR/captura_3.png"
-cp "$ART_DIR/captura_3.png" captures/captura_3.png
+DISPLAY=:0 import -window root "$CAPTURE_DIR/captura_3.png"
+if [ -n "$ART_DIR" ]; then cp "$CAPTURE_DIR/captura_3.png" "$ART_DIR/captura_3.png"; fi
 echo "[Captura 3/3] Completada"
 
 echo "ALL_CAPTURES_DONE"
