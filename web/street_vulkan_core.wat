@@ -13,7 +13,8 @@
 ;;   so the host JS/WebGPU client can partition the 2-page memory freely.
 ;;
 ;; Recommended Caller Memory Layout (all 4-byte aligned unless noted):
-;;   0x0000 .. 0x000B (12 B): camera position [x, y, z] (3 x f32)
+;;   0x0000 .. 0x0003 ( 4 B): reserved NULL guard (C/Emscripten ABI parity)
+;;   0x0004 .. 0x000F (12 B): camera position [x, y, z] (3 x f32)
 ;;   0x0010 .. 0x0013 ( 4 B): traffic simulation time (1 x f32)
 ;;   0x0014 .. 0x0037 (36 B): optional camera_get_vectors out [fwd(12), right(12), up(12)]
 ;;   0x0040 .. 0x007F (64 B): view matrix (16 x f32, column-major)

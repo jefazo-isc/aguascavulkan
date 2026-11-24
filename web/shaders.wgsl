@@ -446,7 +446,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let nightFactor = u.skyColor.a;
     var emissionColor = vec3<f32>(0.0);
     if (in.emission >= 4.0) {
-        emissionColor = in.color.rgb * (4.0 + in.emission * 1.5);
+        let pulse = 0.92 + 0.08 * sin(u.params.z * 3.0);
+        emissionColor = in.color.rgb * ((4.0 + in.emission * 1.5) * pulse);
     } else if (in.emission > 0.5) {
         let keepColor = ((matID > 0.92 && matID < 0.98) || (matID >= 1.12 && matID <= 1.22));
         let glowCol = select(vec3<f32>(1.0, 0.94, 0.72), in.color.rgb, keepColor);

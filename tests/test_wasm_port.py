@@ -44,7 +44,7 @@ const bytes = fs.readFileSync(wasmPath);
   const u8 = new Uint8Array(mem.buffer);
 
   // Recommended linear memory offsets from web/street_vulkan_core.wat
-  const POS_PTR = 0x0000;
+  const POS_PTR = 0x0004;
   const SIM_TIME_PTR = 0x0010;
   const VIEW_PTR = 0x0040;
   const PROJ_WGPU_PTR = 0x0080;
@@ -301,7 +301,7 @@ class TestWebClientAssets(unittest.TestCase):
     def test_web_assets_structural_markers(self):
         with open(os.path.join(WEB_DIR, "shaders.wgsl"), "r", encoding="utf-8") as f:
             wgsl = f.read()
-        for token in ("@vertex", "@fragment", "struct Uniforms", "1.14", "1.18"):
+        for token in ("@vertex", "@fragment", "struct Uniforms", "1.14", "1.18", "u.params.z"):
             self.assertIn(token, wgsl)
 
         with open(os.path.join(WEB_DIR, "app.js"), "r", encoding="utf-8") as f:
@@ -312,12 +312,14 @@ class TestWebClientAssets(unittest.TestCase):
             "WebGL2Renderer",
             "cull_chunks",
             "sector_0_0.glb",
+            "MEM_POS_PTR = 0x0004",
+            "KeyY",
         ):
             self.assertIn(token, app_js)
 
         with open(os.path.join(WEB_DIR, "index.html"), "r", encoding="utf-8") as f:
             html = f.read()
-        for token in ('id="viewport"', "app.js", "ISO 25010:2023"):
+        for token in ('id="viewport"', "app.js", "ISO 25010:2023", "btn-freeze"):
             self.assertIn(token, html)
 
         with open(os.path.join(WEB_DIR, "renderer_webgpu.js"), "r", encoding="utf-8") as f:

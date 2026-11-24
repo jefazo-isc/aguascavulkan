@@ -413,7 +413,8 @@ void main() {
     float nightFactor = u_skyColor.a;
     vec3 emissionColor = vec3(0.0);
     if (fragEmission >= 4.0) {
-        emissionColor = fragColor.rgb * (4.0 + fragEmission * 1.5);
+        float pulse = 0.92 + 0.08 * sin(u_params.z * 3.0);
+        emissionColor = fragColor.rgb * ((4.0 + fragEmission * 1.5) * pulse);
     } else if (fragEmission > 0.5) {
         bool keepColor = ((matID > 0.92 && matID < 0.98) || (matID >= 1.12 && matID <= 1.22));
         vec3 glowCol = keepColor ? fragColor.rgb : vec3(1.0, 0.94, 0.72);

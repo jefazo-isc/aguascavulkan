@@ -20,8 +20,8 @@ const INITIAL_CAMERA = {
     mouseSensitivity: 0.12,
 };
 
-// WASM linear memory byte offsets (matching web/street_vulkan_core.wat)
-const MEM_POS_PTR = 0x0000;
+// WASM linear memory byte offsets (matching web/street_vulkan_core.wat; 0x0000 reserved as NULL guard)
+const MEM_POS_PTR = 0x0004;
 const MEM_SIM_TIME_PTR = 0x0010;
 const MEM_FWD_PTR = 0x0014;
 const MEM_RIGHT_PTR = 0x0020;
@@ -677,9 +677,10 @@ async function main() {
     };
 
     function resetCamera() {
-        f32Mem[0] = INITIAL_CAMERA.pos[0];
-        f32Mem[1] = INITIAL_CAMERA.pos[1];
-        f32Mem[2] = INITIAL_CAMERA.pos[2];
+        const posBase = MEM_POS_PTR >> 2;
+        f32Mem[posBase + 0] = INITIAL_CAMERA.pos[0];
+        f32Mem[posBase + 1] = INITIAL_CAMERA.pos[1];
+        f32Mem[posBase + 2] = INITIAL_CAMERA.pos[2];
         state.yaw = INITIAL_CAMERA.yaw;
         state.pitch = INITIAL_CAMERA.pitch;
         showToast('Cámara: Rolcar Paseo de la Cruz (Sector 0,0)');
@@ -780,6 +781,11 @@ async function main() {
     let lastPointerX = 0;
     let lastPointerY = 0;
 
+    function toggleTimeFreeze() {
+        state.timeFrozen = !state.timeFrozen;
+        showToast(state.timeFrozen ? 'Avance solar: CONGELADO' : 'Avance solar: ACTIVO');
+    }
+
     window.addEventListener('keydown', (e) => {
         keysDown.add(e.code);
         if (e.code === 'KeyF') {
@@ -792,6 +798,8 @@ async function main() {
             state.presetIdx = (state.presetIdx + 1) % TIME_PRESETS.length;
             state.simHour = TIME_PRESETS[state.presetIdx].hour;
             showToast(`Hora: ${TIME_PRESETS[state.presetIdx].label}`);
+        } else if (e.code === 'KeyY') {
+            toggleTimeFreeze();
         } else if (e.code === 'KeyR') {
             resetCamera();
         } else if (e.code === 'KeyH') {
@@ -909,6 +917,7 @@ async function main() {
         state.simHour = TIME_PRESETS[state.presetIdx].hour;
         showToast(`Hora: ${TIME_PRESETS[state.presetIdx].label}`);
     });
+    document.getElementById('btn-freeze')?.addEventListener('click', toggleTimeFreeze);
     document.getElementById('btn-flash')?.addEventListener('click', () => {
         state.flashlightOn = !state.flashlightOn;
         showToast(state.flashlightOn ? 'Linterna: ON' : 'Linterna: OFF');
@@ -996,9 +1005,10 @@ async function main() {
         wasm.camera_step(MEM_POS_PTR, state.yaw, state.pitch, moveFwd, moveRight, moveUp, speed, dt);
         wasm.camera_get_vectors(state.yaw, state.pitch, MEM_FWD_PTR, MEM_RIGHT_PTR, MEM_UP_PTR);
 
-        const camX = f32Mem[0];
-        const camY = f32Mem[1];
-        const camZ = f32Mem[2];
+        const posBase = MEM_POS_PTR >> 2;
+        const camX = f32Mem[posBase + 0];
+        const camY = f32Mem[posBase + 1];
+        const camZ = f32Mem[posBase + 2];
         const fwdX = f32Mem[(MEM_FWD_PTR >> 2) + 0];
         const fwdY = f32Mem[(MEM_FWD_PTR >> 2) + 1];
         const fwdZ = f32Mem[(MEM_FWD_PTR >> 2) + 2];
@@ -1157,7 +1167,7 @@ async function main() {
                 const hrs = Math.floor(state.simHour);
                 const mins = Math.floor((state.simHour - hrs) * 60);
                 const phaseLabel = (hrs >= 6 && hrs < 18) ? (hrs < 8 ? 'Amanecer' : hrs > 16 ? 'Atardecer' : 'Día') : 'Noche';
-                elTime.textContent = `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')} (${phaseLabel})`;
+                elTime.textContent = `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')} (${phaseLabel})${state.timeFrozen ? ' [Fijo]' : ''}`;
             }
             if (elTraffic) {
                 elTraffic.textContent = `${TRAFFIC_PHASE_LABELS[state.trafficPhase] || 'F0'} | ${state.trafficSignals.length} Semaf`;
