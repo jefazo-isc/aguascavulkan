@@ -33,14 +33,27 @@ jobs:
       - name: Assemble GitHub Pages showcase bundle
         run: |
           rm -rf _site
-          mkdir -p _site/web _site/models/sectors
+          mkdir -p _site/web _site/models/sectors _site/models/cars _site/assets
           cp -r web/. _site/web/
           for f in \
             models/texture_atlas_16x16.png \
             models/traffic_signals.json \
             models/rolcar_aguascalientes.json \
-            models/utility_poles_rolcar.json; do
+            models/utility_poles_rolcar.json \
+            models/road_network.bin; do
             if [ -f "$f" ]; then cp "$f" _site/models/; fi
+          done
+          if [ -d models/cars ]; then
+            cp -r models/cars/. _site/models/cars/
+          fi
+          for f in \
+            assets/texture_atlas_16x16.png \
+            assets/rolcar_anuncio.png \
+            assets/rolcar_fachada.png \
+            assets/rolcar_logo_banner.png \
+            assets/rolcar_logo_oval.png \
+            assets/rolcar_marquesina.png; do
+            if [ -f "$f" ]; then cp "$f" _site/assets/; fi
           done
           for f in \
             models/sectors/sector_0_0.glb \

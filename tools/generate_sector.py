@@ -808,7 +808,9 @@ def generate_sector():
         export_traffic_signals_json(json_out, traffic_metadata)
     else:
         manifest_path = "models/sectors.json"
-        if os.path.exists(manifest_path) and os.path.exists(chunks_out):
+        # Seguridad Web: solo actualizar el manifiesto de producción si la salida es una ruta oficial en models/
+        is_production_output = glb_out.startswith("models/") or glb_out.startswith("./models/")
+        if is_production_output and os.path.exists(manifest_path) and os.path.exists(chunks_out):
             try:
                 import json
                 with open(manifest_path, "r") as mf:
