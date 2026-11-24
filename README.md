@@ -1,6 +1,6 @@
 # 🏙️ StreetVulkan: Gemelo Digital Urbano 3D de Aguascalientes
 
-> **Motor Gráfico en C11 / Vulkan API 1.2 + SDL2**, con pipeline geoespacial procedural y cliente web en el navegador impulsado por **WebAssembly en Ensamblador (`.wat` $\to$ `.wasm`)** y **WebGPU / WebGL2**.
+> **Arquitectura Web-First impulsada por WebGL2, WebGPU y WebAssembly (`.wat` $\to$ `.wasm`)**, con motor nativo de referencia en C11 / Vulkan 1.2 + SDL2 y pipeline geoespacial procedural.
 >
 > 🌐 **Demo en Vivo (GitHub Pages):** [https://jefazo-isc.github.io/aguascavulkan/](https://jefazo-isc.github.io/aguascavulkan/)  
 > 📦 **Repositorio Oficial:** [https://github.com/jefazo-isc/aguascavulkan](https://github.com/jefazo-isc/aguascavulkan)
@@ -12,18 +12,18 @@
 Si tienes que exponer o presentar **StreetVulkan**, aquí tienes el resumen ejecutivo estructurado para responder qué hace, por qué es innovador, cómo está construido y cómo demostrarlo en vivo:
 
 ### 🎯 1. La Visión del Proyecto
-**StreetVulkan** es una plataforma de **simulación urbana y visualización tridimensional** de la ciudad de **Aguascalientes, México**. Integra datos geoespaciales (edificaciones de OpenStreetMap, elevación DEM satelital Terrarium/SRTM y red vial) en un motor nativo escrito en **C11 con Vulkan 1.2**, junto con un cliente web cuyo kernel matemático está escrito en **WebAssembly Text (WAT)** y cuyo renderizado usa **WebGPU/WebGL2**.
+**StreetVulkan** es una plataforma de **simulación urbana y visualización tridimensional** de la ciudad de **Aguascalientes, México**. Integra datos geoespaciales (edificaciones de OpenStreetMap, elevación DEM satelital Terrarium/SRTM y red vial) en una moderna plataforma web con soporte universal **WebGL2 / WebGPU**, cuyo kernel matemático está escrito en **WebAssembly Text (WAT)** puro, complementado por un motor de referencia nativo en C11/Vulkan 1.2.
 
 ### 🌟 2. Características Clave & Cifras de Impacto (Para la Presentación)
 - **325,511 Edificios Reales Clasificados**: Dataset pre-clasificado en `models/classified_buildings.json` a partir de huellas Overture con alturas procedimentales, techos y fachadas segmentadas (su regeneración con `tools/classify_buildings.py` requiere los archivos externos Overture GeoJSON / INEGI DENUE CSV).
 - **27 Sucursales Rolcar Georreferenciadas**: Modelado 3D fidedigno con señalamientos y logos corporativos vectoriales (ej. nodo central *Paseo de la Cruz / José María Chávez*).
 - **1,215 Postes y 1,180 Tramos de Cableado CFE**: Simulación de tendido eléctrico aéreo con curvas de flecha parabólica (aproximación de catenaria) procedimentales.
 - **552 Semáforos Inteligentes y Red Vial**: Simulación matemática con grafos de tráfico y temporizadores sincronizados.
-- **200 Vehículos Autónomos Instanciados en GPU**: Cinemática de vehículos navegando carriles viales en tiempo real.
+- **200 Vehículos Autónomos Instanciados**: Cinemática y simulación de vehículos navegando carriles viales en tiempo real en WebGL2 y WebGPU.
 - **Topografía Real (DEM 30m)**: Elevación del terreno corregida topográficamente a partir de datos satelitales.
 - **401 Macro-Sectores Modulares (Sector Showcase en Repo)**: `models/sectors.json` declara 401 celdas de *streaming* espacial para mantener el consumo de memoria acotado (< 99 MB por sector); el repositorio distribuye en disco el sector central `models/sectors/sector_0_0.glb` (`chunks_0_0.json`), y generar los 401 sectores completos requiere los insumos externos OSM/Overture.
-- **Kernel WebAssembly en Ensamblador Puro (`.wat`)**: Cero dependencias pesadas de runtime. Las matemáticas 3D (cámara, proyección, matrices 4x4, frustum culling Gribb/Hartmann y lógica de semáforos) corren en código máquina WASM compilado por nuestro propio compilador/ensamblador en Python.
-- **Renderizado Web**: El cliente usa shaders WGSL con WebGPU y un backend WebGL2 alternativo. El objetivo de 60 FPS debe verificarse en el dispositivo y navegador de la demostración; no es un resultado de benchmark de CI.
+- **Kernel WebAssembly en Ensamblador Puro (`.wat`)**: Cero dependencias pesadas de runtime. Las matemáticas 3D (cámara, proyección, matrices 4x4, frustum culling Gribb/Hartmann, lógica de semáforos y simulación cinemática vehicular) corren en código máquina WASM compilado por nuestro propio compilador/ensamblador en Python.
+- **Renderizado Web Universal (WebGL2 & WebGPU)**: El cliente implementa shaders PBR especializados para arquitectura urbana (`vs_building`, `fs_building`, `VS_BUILDING_GLSL300`, `FS_BUILDING_GLSL300`), streaming LRU y fallback universal garantizado sin instalar drivers o dependencias de escritorio.
 - **Verificación del software**: El repositorio incluye pruebas C y Python, una prueba separada de reproducibilidad WAT→WASM, sanitizadores y auditorías internas relacionadas con calidad y seguridad. Estas verificaciones documentan prácticas y resultados parciales; no constituyen certificación ni demuestran por sí solas conformidad formal con normas ISO.
 
 ---
@@ -33,8 +33,8 @@ Si tienes que exponer o presentar **StreetVulkan**, aquí tienes el resumen ejec
 StreetVulkan integrates three primary runtime and tooling layers around shared geospatial, mesh, and lighting contracts:
 
 1. **Offline Geospatial, Asset & Quality Pipeline (`tools/`, `tools/metrics/`)**: Python generators and fetchers ingest OpenStreetMap XML, AWS Terrarium DEM tiles, Overture GeoJSON footprints, INEGI DENUE records, ArcGIS World Imagery, Google Street View/KartaView photos, and Gemini API vision outputs to build `models/sectors.json`, `models/sectors/*.glb`, `models/chunks.json`, `models/road_network.bin`, `models/traffic_signals.json`, vehicle/pedestrian `.glb` assets, and procedural textures. The same toolchain assembles `web/street_vulkan_core.wat` into `web/street_vulkan_core.wasm` and executes the ISO/IEC 25040/25041 evaluation suite (`tools/metrics/evaluate_iso25040.py`).
-2. **Native C11 / Vulkan 1.2 Engine (`include/`, `src/`, `shaders/`)**: Compiled with GCC against SDL2, Vulkan 1.2, `libm`, and `pthread` (`Makefile`), using GLSL 450 shaders compiled to SPIR-V (`shaders/*.spv`) via `glslangValidator -V`. `src/main.c` runs a fixed-timestep (`1/60` s) simulation loop (`traffic_system`, `car_system`, `ped_system`) paired with mutex-serialized text/JSONL logging (`src/logger.c`), pooled Vulkan device/host suballocation (`src/vulkan_memory_pool.c`), and an asynchronous POSIX `pthread` worker (`src/sector_system.c`) that streams 1 km x 1 km macro-sectors around the camera.
-3. **Browser WebAssembly + WebGPU/WebGL2 Client (`web/`)**: `web/index.html` loads `web/app.js` as an ES module, instantiating a fixed 2-page (128 KiB) WebAssembly math/culling/traffic kernel (`web/street_vulkan_core.wasm`, mirrored in C by `web/main_wasm.c` + `src/math_camera.c`), streaming GLB 2.0 sectors, chunk manifests, texture atlases, and optional traffic signals via HTTP `GET`/`HEAD`, and rendering via `WebGPURenderer` (`web/shaders.wgsl`) or `WebGL2Renderer` (`VS_GLSL300`/`FS_GLSL300`).
+2. **Native C11 / Vulkan 1.2 Engine (`include/`, `src/`, `shaders/`)**: Reference engine compiled with GCC against SDL2, Vulkan 1.2, `libm`, and `pthread` (`Makefile`), using GLSL 450 shaders compiled to SPIR-V (`shaders/*.spv`) via `glslangValidator -V`. `src/main.c` runs a fixed-timestep (`1/60` s) simulation loop (`traffic_system`, `car_system`, `ped_system`) paired with mutex-serialized text/JSONL logging (`src/logger.c`), pooled Vulkan device/host suballocation (`src/vulkan_memory_pool.c`), and an asynchronous POSIX `pthread` worker (`src/sector_system.c`) that streams 1 km x 1 km macro-sectors around the camera.
+3. **Browser WebAssembly + WebGL2/WebGPU Client (`web/`)**: Primary Web-First client (`web/index.html`) loading `web/app.js` as an ES module, instantiating a fixed 2-page (128 KiB) WebAssembly math/culling/traffic kernel (`web/street_vulkan_core.wasm`, mirrored in C by `web/main_wasm.c` + `src/math_camera.c`), streaming GLB 2.0 sectors, chunk manifests, texture atlases, dynamic vehicles, and optional traffic signals via HTTP `GET`/`HEAD`, and rendering via universal `WebGL2Renderer` (`VS_GLSL300`/`FS_GLSL300`, `VS_BUILDING_GLSL300`/`FS_BUILDING_GLSL300`) or accelerated `WebGPURenderer` (`web/shaders.wgsl`).
 
 ```text
   ┌────────────────────────────────────────────────────────────────────────────┐

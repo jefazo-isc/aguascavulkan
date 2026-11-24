@@ -161,3 +161,29 @@ SV_EXPORT int32_t traffic_tick(float *sim_time_ptr, float dt) {
     if (t < 21.0f) return 2;  /* EW Green */
     return 3;                 /* EW Amber */
 }
+
+SV_EXPORT int32_t update_vehicle_stream(float *cars_ptr, int32_t car_count, float dt, float speed) {
+    if (!cars_ptr || car_count <= 0) return 0;
+    for (int32_t i = 0; i < car_count; ++i) {
+        float *car = &cars_ptr[i * 6];
+        float prog = car[4] + dt * speed;
+        if (prog >= 1.0f) {
+            prog -= 1.0f;
+        }
+        car[4] = prog;
+        float cid = car[5];
+        if (cid < 0.5f) {
+            /* Corridor 0: Av. Paseo de la Cruz (East-West axis X: 200 -> 1000, Z ~ 795.5) */
+            car[0] = 200.0f + prog * 800.0f;
+            car[2] = 795.5f;
+            car[3] = 90.0f;
+        } else {
+            /* Corridor 1: Av. José María Chávez (North-South axis X ~ 952.0, Z: 200 -> 1000) */
+            car[0] = 952.0f;
+            car[2] = 200.0f + prog * 800.0f;
+            car[3] = 0.0f;
+        }
+    }
+    return car_count;
+}
+

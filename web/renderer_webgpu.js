@@ -23,6 +23,7 @@ export class WebGPURenderer {
         this.depthWidth = 0;
         this.depthHeight = 0;
         this.sectors = new Map();
+        this.vehicleMesh = null;
     }
 
     async init(canvas, options = {}) {
@@ -587,9 +588,50 @@ export class WebGPURenderer {
         return calls;
     }
 
+    uploadVehicleModel(meshData) {
+        if (!this.device || !meshData) return;
+        if (this.vehicleMesh) {
+            if (this.vehicleMesh.posBuf) this.vehicleMesh.posBuf.destroy();
+            if (this.vehicleMesh.normBuf) this.vehicleMesh.normBuf.destroy();
+            if (this.vehicleMesh.uvBuf) this.vehicleMesh.uvBuf.destroy();
+            if (this.vehicleMesh.colBuf) this.vehicleMesh.colBuf.destroy();
+            if (this.vehicleMesh.emBuf) this.vehicleMesh.emBuf.destroy();
+            if (this.vehicleMesh.idxBuf) this.vehicleMesh.idxBuf.destroy();
+            this.vehicleMesh = null;
+        }
+
+        const posBuf = this._createGpuBuffer(meshData.pos, GPUBufferUsage.VERTEX, 'vehicle:pos');
+        const normBuf = this._createGpuBuffer(meshData.norm, GPUBufferUsage.VERTEX, 'vehicle:norm');
+        const uvBuf = this._createGpuBuffer(meshData.uv, GPUBufferUsage.VERTEX, 'vehicle:uv');
+        const colBuf = this._createGpuBuffer(meshData.col, GPUBufferUsage.VERTEX, 'vehicle:col');
+        const emBuf = this._createGpuBuffer(meshData.em, GPUBufferUsage.VERTEX, 'vehicle:em');
+        const idxBuf = this._createGpuBuffer(meshData.indices, GPUBufferUsage.INDEX, 'vehicle:idx');
+
+        this.vehicleMesh = {
+            posBuf,
+            normBuf,
+            uvBuf,
+            colBuf,
+            emBuf,
+            idxBuf,
+            indexFormat: meshData.indexFormat || 'uint16',
+            indexCount: meshData.indexCount,
+            vertexCount: meshData.vertexCount,
+        };
+    }
+
     destroy() {
         for (const key of Array.from(this.sectors.keys())) {
             this.unloadSector(key);
+        }
+        if (this.vehicleMesh) {
+            if (this.vehicleMesh.posBuf) this.vehicleMesh.posBuf.destroy();
+            if (this.vehicleMesh.normBuf) this.vehicleMesh.normBuf.destroy();
+            if (this.vehicleMesh.uvBuf) this.vehicleMesh.uvBuf.destroy();
+            if (this.vehicleMesh.colBuf) this.vehicleMesh.colBuf.destroy();
+            if (this.vehicleMesh.emBuf) this.vehicleMesh.emBuf.destroy();
+            if (this.vehicleMesh.idxBuf) this.vehicleMesh.idxBuf.destroy();
+            this.vehicleMesh = null;
         }
         if (this.depthTexture) this.depthTexture.destroy();
         if (this.satelliteTexture) this.satelliteTexture.destroy();

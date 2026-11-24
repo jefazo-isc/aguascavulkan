@@ -13,7 +13,7 @@ WASM_OUT = web/street_vulkan_core.wasm
 C_SRC = web/main_wasm.c src/math_camera.c
 CFLAGS_COMMON = -Wall -Wextra -O2 -Iinclude
 
-EXPORTED_FUNCS = ["_get_version","_camera_get_vectors","_camera_step","_mat4_perspective_webgpu","_mat4_perspective_webgl","_mat4_lookat","_mat4_multiply","_frustum_extract","_cull_chunks","_traffic_tick"]
+EXPORTED_FUNCS = ["_get_version","_camera_get_vectors","_camera_step","_mat4_perspective_webgpu","_mat4_perspective_webgl","_mat4_lookat","_mat4_multiply","_frustum_extract","_cull_chunks","_traffic_tick","_update_vehicle_stream"]
 
 .PHONY: all wat emcc check-c clean
 

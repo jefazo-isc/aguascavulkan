@@ -600,6 +600,77 @@ function buildStandaloneFallbackSector() {
     };
 }
 
+function buildFallbackVehicleMesh() {
+    const positions = [];
+    const normals = [];
+    const uvs = [];
+    const colors = [];
+    const emissions = [];
+
+    const pushBox = (minX, minY, minZ, maxX, maxY, maxZ, col, em = 0.0) => {
+        const pushFace = (p0, p1, p2, p3, n) => {
+            const pts = [p0, p1, p2, p0, p2, p3];
+            for (let i = 0; i < 6; i++) {
+                positions.push(pts[i][0], pts[i][1], pts[i][2]);
+                normals.push(n[0], n[1], n[2]);
+                uvs.push(0.5, 0.5);
+                colors.push(col[0], col[1], col[2], col[3]);
+                emissions.push(em);
+            }
+        };
+        // +Y top, -Y bottom, +Z front, -Z back, +X right, -X left
+        pushFace([minX, maxY, minZ], [maxX, maxY, minZ], [maxX, maxY, maxZ], [minX, maxY, maxZ], [0, 1, 0]);
+        pushFace([minX, minY, maxZ], [maxX, minY, maxZ], [maxX, minY, minZ], [minX, minY, minZ], [0, -1, 0]);
+        pushFace([minX, minY, maxZ], [maxX, minY, maxZ], [maxX, maxY, maxZ], [minX, maxY, maxZ], [0, 0, 1]);
+        pushFace([maxX, minY, minZ], [minX, minY, minZ], [minX, maxY, minZ], [maxX, maxY, minZ], [0, 0, -1]);
+        pushFace([maxX, minY, maxZ], [maxX, minY, minZ], [maxX, maxY, minZ], [maxX, maxY, maxZ], [1, 0, 0]);
+        pushFace([minX, minY, minZ], [minX, minY, maxZ], [minX, maxY, maxZ], [minX, maxY, minZ], [-1, 0, 0]);
+    };
+
+    // 1. Lower chassis (4.2m length along Z, 1.8m width along X, 0.7m height)
+    pushBox(-0.9, 0.2, -2.1, 0.9, 0.9, 2.1, [0.15, 0.45, 0.85, 2.0], 0.0);
+    // 2. Cabin / roof (2.2m length, 1.5m width, 0.65m height)
+    pushBox(-0.75, 0.9, -0.9, 0.75, 1.55, 1.3, [0.08, 0.12, 0.18, 2.0], 0.0);
+    // 3. Headlights (Z = +2.1, high emission white/amber)
+    pushBox(0.45, 0.45, 2.08, 0.75, 0.75, 2.12, [1.0, 0.98, 0.85, 2.0], 8.0);
+    pushBox(-0.75, 0.45, 2.08, -0.45, 0.75, 2.12, [1.0, 0.98, 0.85, 2.0], 8.0);
+    // 4. Taillights (Z = -2.1, high emission red)
+    pushBox(0.45, 0.50, -2.12, 0.75, 0.75, -2.08, [1.0, 0.08, 0.05, 2.0], 6.0);
+    pushBox(-0.75, 0.50, -2.12, -0.45, 0.75, -2.08, [1.0, 0.08, 0.05, 2.0], 6.0);
+
+    const vertexCount = positions.length / 3;
+    const indices = new Uint16Array(vertexCount);
+    for (let i = 0; i < vertexCount; i++) indices[i] = i;
+
+    return {
+        pos: new Float32Array(positions),
+        norm: new Float32Array(normals),
+        uv: new Float32Array(uvs),
+        col: new Float32Array(colors),
+        em: new Float32Array(emissions),
+        indices,
+        indexFormat: 'uint16',
+        vertexCount,
+        indexCount: vertexCount,
+    };
+}
+
+async function loadVehicleModelWithFallback(basePrefix) {
+    try {
+        const carGlbUrl = `${basePrefix}models/cars/car_sedan.glb`;
+        const resp = await fetch(carGlbUrl);
+        if (resp.ok) {
+            const buf = await resp.arrayBuffer();
+            const parsed = parseGLB(buf);
+            if (parsed && parsed.vertexCount > 0) return parsed;
+        }
+    } catch (_err) {
+        // Fallback
+    }
+    return buildFallbackVehicleMesh();
+}
+
+
 // ----------------------------------------------------------------------------
 // Fetch with progress callback
 // ----------------------------------------------------------------------------
@@ -967,6 +1038,12 @@ async function main() {
     const missingSectors = new Set();
     let manifestInfo = await resolveSectorManifest();
 
+    loadVehicleModelWithFallback(manifestInfo ? manifestInfo.basePrefix : '../').then((vMesh) => {
+        if (renderer && renderer.uploadVehicleModel) {
+            renderer.uploadVehicleModel(vMesh);
+        }
+    });
+
     function unloadSectorEntry(key) {
         const secMeta = sectorCache.get(key);
         if (!secMeta) return;
@@ -1307,6 +1384,13 @@ async function main() {
         togglePause(false);
     });
 
+    document.getElementById('pause-switch-backend')?.addEventListener('click', () => {
+        const next = isWebGPU ? 'webgl2' : 'webgpu';
+        const url = new URL(window.location.href);
+        url.searchParams.set('backend', next);
+        window.location.href = url.toString();
+    });
+
     document.getElementById('btn-time')?.addEventListener('click', () => {
         state.presetIdx = (state.presetIdx + 1) % TIME_PRESETS.length;
         state.simHour = TIME_PRESETS[state.presetIdx].hour;
@@ -1626,6 +1710,7 @@ async function main() {
             cullFlagsBySector,
             cullingEnabled: state.cullingEnabled,
             renderMode: state.renderMode || 'all',
+            cars: state.carsEnabled ? { ptr: MEM_CARS_PTR, count: state.carCount, memory: f32Mem } : null,
         });
 
         // Background nearby sector streaming check every 0.5s

@@ -21,7 +21,11 @@ SHADERS_FRAG = $(wildcard $(SHADERDIR)/*.frag)
 SPV_VERT = $(patsubst $(SHADERDIR)/%.vert, $(SHADERDIR)/%.spv, $(SHADERS_VERT))
 SPV_FRAG = $(patsubst $(SHADERDIR)/%.frag, $(SHADERDIR)/%.spv, $(SHADERS_FRAG))
 
-all: $(BUILDDIR) $(SPV_VERT) $(SPV_FRAG) $(TARGET)
+all: web-build native
+
+native: $(BUILDDIR) $(SPV_VERT) $(SPV_FRAG) $(TARGET)
+
+web: web-build
 
 debug: CFLAGS += -DDEBUG -g -O0
 debug: all
@@ -107,4 +111,4 @@ serve: web-build
 	@echo "Lanzando servidor StreetVulkan Web en http://localhost:8080/web/ ..."
 	python3 -m http.server 8080
 
-.PHONY: all clean debug test asan-test metrics quality web-build web-test serve
+.PHONY: all web native clean debug test asan-test metrics quality web-build web-test serve

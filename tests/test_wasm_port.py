@@ -331,11 +331,17 @@ class TestWebClientAssets(unittest.TestCase):
         self.assertIn("renderBuildings", wgpu_js)
 
         with open(os.path.join(WEB_DIR, "renderer_webgl2.js"), "r", encoding="utf-8") as f:
-            self.assertIn("export class WebGL2Renderer", f.read())
+            wgl_js = f.read()
+        self.assertIn("export class WebGL2Renderer", wgl_js)
+        self.assertIn("buildingProgram", wgl_js)
+        self.assertIn("renderBuildings", wgl_js)
+        self.assertIn("uploadVehicleModel", wgl_js)
+        self.assertIn("VS_BUILDING_GLSL300", wgl_js)
+        self.assertIn("FS_BUILDING_GLSL300", wgl_js)
 
         with open(os.path.join(WEB_DIR, "main_wasm.c"), "r", encoding="utf-8") as f:
             main_c = f.read()
-        for fn in ("get_version", "camera_step", "mat4_perspective_webgpu", "frustum_extract", "cull_chunks", "traffic_tick"):
+        for fn in ("get_version", "camera_step", "mat4_perspective_webgpu", "frustum_extract", "cull_chunks", "traffic_tick", "update_vehicle_stream"):
             self.assertIn(fn, main_c)
 
         with open(os.path.join(ROOT, "Makefile.wasm"), "r", encoding="utf-8") as f:
@@ -727,6 +733,231 @@ process.stdout.write(JSON.stringify({
         self.assertTrue(data["renderBuildingsOk"])
         self.assertEqual(data["noBldgCalls"], 0)
         self.assertTrue(data["multiOk"])
+
+    def test_webgl2_renderer_building_pipeline_and_culling(self):
+        """Verify WebGL2Renderer buildingProgram, building-only renderMode, de-interleaving, and culling."""
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node is not installed in PATH")
+
+        node_script = """
+const { WebGL2Renderer } = await import('./web/renderer_webgl2.js');
+
+class MockGL2 {
+    constructor() {
+        this.VERTEX_SHADER = 1; this.FRAGMENT_SHADER = 2; this.COMPILE_STATUS = 3; this.LINK_STATUS = 4;
+        this.UNIFORM_BUFFER = 5; this.DYNAMIC_DRAW = 6; this.STATIC_DRAW = 7; this.ARRAY_BUFFER = 8;
+        this.ELEMENT_ARRAY_BUFFER = 9; this.DEPTH_TEST = 10; this.LEQUAL = 11; this.CULL_FACE = 12;
+        this.BLEND = 13; this.SRC_ALPHA = 14; this.ONE_MINUS_SRC_ALPHA = 15; this.ONE = 16;
+        this.ZERO = 17; this.TEXTURE_2D = 18; this.RGBA8 = 19; this.RGBA = 20; this.UNSIGNED_BYTE = 21;
+        this.UNSIGNED_SHORT = 22; this.UNSIGNED_INT = 23; this.FLOAT = 24; this.TRIANGLES = 25;
+        this.COLOR_BUFFER_BIT = 26; this.DEPTH_BUFFER_BIT = 27; this.TEXTURE_MIN_FILTER = 28;
+        this.TEXTURE_MAG_FILTER = 29; this.TEXTURE_WRAP_S = 30; this.TEXTURE_WRAP_T = 31;
+        this.LINEAR_MIPMAP_LINEAR = 32; this.LINEAR = 33; this.CLAMP_TO_EDGE = 34;
+        this.TEXTURE0 = 35; this.TEXTURE1 = 36; this.INVALID_INDEX = 0xFFFFFFFF;
+
+        this.draws = [];
+        this.activeProgram = null;
+        this.activeVao = null;
+        this.boundBuffers = {};
+    }
+    createShader(t) { return { type: t }; }
+    shaderSource() {} compileShader() {} getShaderParameter() { return true; }
+    getShaderInfoLog() { return ''; } deleteShader() {}
+    createProgram() { return { id: Math.random() }; } attachShader() {} linkProgram() {}
+    getProgramParameter() { return true; } getProgramInfoLog() { return ''; } deleteProgram() {}
+    getUniformBlockIndex() { return 0; } uniformBlockBinding() {}
+    useProgram(p) { this.activeProgram = p; } getUniformLocation(p, name) { return { name }; }
+    uniform1i() {} createBuffer() { return { id: Math.random() }; }
+    bindBuffer(target, buf) { this.boundBuffers[target] = buf; }
+    bufferData(target, data) {
+        if (this.boundBuffers[target]) {
+            this.boundBuffers[target].size = data.byteLength || data;
+        }
+    }
+    bufferSubData() {} bindBufferBase() {} enable() {} disable() {} depthFunc() {}
+    depthMask() {} blendFuncSeparate() {} viewport() {} clearColor() {} clearDepth() {}
+    clear() {} createTexture() { return {}; } bindTexture() {} texImage2D() {}
+    generateMipmap() {} glTexParameteri() {} deleteTexture() {}
+    createVertexArray() { return { id: Math.random() }; }
+    bindVertexArray(vao) { this.activeVao = vao; }
+    deleteVertexArray() {} deleteBuffer() {} enableVertexAttribArray() {} vertexAttribPointer() {}
+    activeTexture() {}
+    drawElements(mode, count, type, offset) {
+        this.draws.push({ mode, count, type, offset, program: this.activeProgram, vao: this.activeVao });
+    }
+    getExtension() { return null; } getParameter() { return 'MockWebGL2'; }
+}
+
+const mockGl = new MockGL2();
+const mockCanvas = { getContext: () => mockGl, width: 800, height: 600 };
+const renderer = new WebGL2Renderer();
+await renderer.init(mockCanvas);
+
+const hasBuildingProgram = Boolean(renderer.buildingProgram);
+
+// 1. De-interleave 52-byte engine struct buffers
+const engineVerts = new Float32Array([
+    1, 2, 3,  0, 1, 0,  0.5, 0.5,  0.8, 0.8, 0.8, 1.0,  0.0,
+    4, 5, 6,  0, 1, 0,  0.1, 0.2,  0.9, 0.9, 0.9, 0.35, 1.5,
+]);
+renderer.uploadSector('sec_inter', { interleaved: engineVerts, vertexCount: 2 }, []);
+const secInter = renderer.sectors.get('sec_inter');
+const deinterleavedOk = (
+    secInter.posBuf.size === 24 &&
+    secInter.normBuf.size === 24 &&
+    secInter.uvBuf.size === 16 &&
+    secInter.colBuf.size === 32 &&
+    secInter.emBuf.size === 8 &&
+    secInter.indexCount === 2
+);
+renderer.unloadSector('sec_inter');
+
+// 2. Chunked sector rendering with frustum culling
+const fakeChunks = Array.from({ length: 64 }, (_, i) => ({ start: i * 1000, count: 1000 }));
+const chunkMeshData = {
+    pos: new Float32Array(30), norm: new Float32Array(30), uv: new Float32Array(20),
+    col: new Float32Array(40), em: new Float32Array(10),
+    indices: new Uint32Array(64000), indexFormat: 'uint32',
+    vertexCount: 10, indexCount: 64000,
+    buildingIndices: new Uint32Array(15000),
+    submeshes: [
+        { name: 'sector_terrain', indexStart: 0, indexCount: 49000, isBuilding: false },
+        { name: 'sector_buildings', indexStart: 0, indexCount: 15000, isBuilding: true }
+    ]
+};
+renderer.uploadSector('sec_chunked', chunkMeshData, fakeChunks);
+
+const cullFlags = new Uint8Array(64);
+for (let i = 0; i < 20; i++) cullFlags[i] = 1;
+
+mockGl.draws = [];
+const statsNorm = renderer.render({
+    uniformBufferData: new Float32Array(568),
+    clearColor: [0, 0, 0],
+    cullFlagsBySector: new Map([['sec_chunked', cullFlags]]),
+    cullingEnabled: true
+});
+
+const chunksOk = (
+    statsNorm.drawCalls === 2 &&
+    statsNorm.visibleVerts === 64000 &&
+    mockGl.draws[0].program === renderer.program &&
+    mockGl.draws[1].program === renderer.buildingProgram
+);
+
+// 3. renderMode: 'buildings'
+mockGl.draws = [];
+const statsBldg = renderer.render({
+    uniformBufferData: new Float32Array(568),
+    clearColor: [0, 0, 0],
+    cullingEnabled: true,
+    renderMode: 'buildings'
+});
+const bldgModeOk = (
+    statsBldg.drawCalls === 1 &&
+    statsBldg.visibleVerts === 15000 &&
+    mockGl.draws[0].program === renderer.buildingProgram &&
+    mockGl.draws[0].count === 15000
+);
+
+// 4. renderBuildings API
+mockGl.draws = [];
+const bldgCalls = renderer.renderBuildings('sec_chunked');
+const renderBuildingsOk = (
+    bldgCalls === 1 &&
+    mockGl.draws[0].program === renderer.buildingProgram &&
+    mockGl.draws[0].count === 15000
+);
+
+// 5. Sector without buildings produces 0 calls in renderBuildings
+renderer.unloadSector('sec_chunked');
+renderer.uploadSector('sec_nobldg', {
+    pos: new Float32Array(9), norm: new Float32Array(9), uv: new Float32Array(6),
+    col: new Float32Array(12), em: new Float32Array(3),
+    indices: new Uint16Array([0, 1, 2]), indexFormat: 'uint16',
+    vertexCount: 3, indexCount: 3,
+    submeshes: [{ name: 'terrain_only', isBuilding: false, indexStart: 0, indexCount: 3 }]
+}, []);
+const noBldgCalls = renderer.renderBuildings('sec_nobldg');
+renderer.unloadSector('sec_nobldg');
+
+// 6. Multi-mesh GLB without chunks draws submeshes with respective programs
+renderer.uploadSector('sec_multi', {
+    pos: new Float32Array(18), norm: new Float32Array(18), uv: new Float32Array(12),
+    col: new Float32Array(24), em: new Float32Array(6),
+    indices: new Uint16Array([0, 1, 2, 3, 4, 5]), indexFormat: 'uint16',
+    vertexCount: 6, indexCount: 6,
+    submeshes: [
+        { name: 'terrain', isBuilding: false, indexStart: 0, indexCount: 3 },
+        { name: 'bldg', isBuilding: true, indexStart: 3, indexCount: 3 }
+    ]
+}, []);
+mockGl.draws = [];
+renderer.render({
+    uniformBufferData: new Float32Array(568),
+    clearColor: [0, 0, 0],
+    cullFlagsBySector: new Map([['sec_multi', new Uint8Array([1])]]),
+    cullingEnabled: true
+});
+const multiOk = (
+    mockGl.draws.length === 2 &&
+    mockGl.draws[0].program === renderer.program && mockGl.draws[0].count === 3 &&
+    mockGl.draws[1].program === renderer.buildingProgram && mockGl.draws[1].count === 3
+);
+
+// 7. Vehicle model upload and dynamic car rendering
+renderer.uploadVehicleModel({
+    pos: new Float32Array(18), norm: new Float32Array(18), uv: new Float32Array(12),
+    col: new Float32Array(24), em: new Float32Array(6),
+    indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
+    indexCount: 6, vertexCount: 4, indexFormat: 'uint16'
+});
+const fakeCarsMem = new Float32Array(50 * 6);
+for (let i = 0; i < 50; i++) {
+    fakeCarsMem[i * 6 + 0] = 500.0 + i;
+    fakeCarsMem[i * 6 + 1] = 8.8;
+    fakeCarsMem[i * 6 + 2] = 795.5;
+    fakeCarsMem[i * 6 + 3] = 90.0;
+}
+mockGl.draws = [];
+renderer.render({
+    uniformBufferData: new Float32Array(568),
+    clearColor: [0, 0, 0],
+    cullingEnabled: false,
+    renderMode: 'all',
+    cars: { ptr: 0, count: 50, memory: fakeCarsMem }
+});
+const vehicleOk = (mockGl.draws.length === 52); // 2 submeshes + 50 cars
+
+process.stdout.write(JSON.stringify({
+    hasBuildingProgram,
+    deinterleavedOk,
+    chunksOk,
+    bldgModeOk,
+    renderBuildingsOk,
+    noBldgCalls,
+    multiOk,
+    vehicleOk
+}));
+"""
+        proc = subprocess.run(
+            [node_bin, "--input-type=module", "-e", node_script],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, f"WebGL2 Node probe failed:\n{proc.stderr}\n{proc.stdout}")
+        data = json.loads(proc.stdout)
+        self.assertTrue(data["hasBuildingProgram"])
+        self.assertTrue(data["deinterleavedOk"])
+        self.assertTrue(data["chunksOk"])
+        self.assertTrue(data["bldgModeOk"])
+        self.assertTrue(data["renderBuildingsOk"])
+        self.assertEqual(data["noBldgCalls"], 0)
+        self.assertTrue(data["multiOk"])
+        self.assertTrue(data["vehicleOk"])
+
 
 
 class TestGitHubShowcaseRepo(unittest.TestCase):
