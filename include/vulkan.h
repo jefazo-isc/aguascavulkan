@@ -4,6 +4,7 @@
 #include "vulkan_types.h"
 
 int vulkan_init(VulkanEngine *eng, SDL_Window *window);
+void vulkan_update_simulation(VulkanEngine *eng, float fixedDeltaTime);
 void vulkan_draw(VulkanEngine *eng, float deltaTime);
 void vulkan_destroy(VulkanEngine *eng);
 float vulkan_get_ground_elevation(VulkanEngine *eng, float x, float z);

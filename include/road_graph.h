@@ -32,6 +32,11 @@ typedef struct {
     RoadNode* nodes;
     RoadEdge* edges;
     RoadPoint* points;
+    float* edge_lengths;
+    uint32_t* node_edge_offsets;
+    uint32_t* node_edge_indices;
+    uint8_t* node_edge_dirs;
+    uint32_t total_incidences;
 } RoadGraph;
 
 // Carga el grafo vial desde un archivo binario en formato RGP1

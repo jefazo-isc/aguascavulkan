@@ -134,4 +134,37 @@ static inline void telemetry_frame_end(TelemetrySystem *t) {
     }
 }
 
+/* ISO/IEC 25022 & 25062: Evaluacion cuantitativa de Calidad en Uso en tiempo real */
+static inline int telemetry_meets_iso25022(const TelemetrySystem *t) {
+    if (!t) return 0;
+    if (t->fps < 60.0f || t->frameTimeMs > 16.67f) return 0;
+    if (t->totalVerts > 0 && t->cullingEfficiencyPct < 40.0f) return 0;
+    return 1;
+}
+
+static inline int telemetry_export_json(const TelemetrySystem *t, const char *filepath) {
+    if (!t || !filepath) return 0;
+    FILE *f = fopen(filepath, "w");
+    if (!f) return 0;
+    fprintf(f,
+        "{\n"
+        "  \"standard\": \"ISO/IEC 25022 & 25062\",\n"
+        "  \"fps\": %.2f,\n"
+        "  \"frameTimeMs\": %.3f,\n"
+        "  \"cpuTimeMs\": %.3f,\n"
+        "  \"gpuTimeMs\": %.3f,\n"
+        "  \"frameBudgetPct\": %.2f,\n"
+        "  \"cullingEfficiencyPct\": %.2f,\n"
+        "  \"visibleVerts\": %u,\n"
+        "  \"totalVerts\": %u,\n"
+        "  \"meetsThresholds\": %s\n"
+        "}\n",
+        t->fps, t->frameTimeMs, t->cpuTimeMs, t->gpuTimeMs,
+        t->frameBudgetPct, t->cullingEfficiencyPct,
+        t->visibleVerts, t->totalVerts,
+        telemetry_meets_iso25022(t) ? "true" : "false");
+    fclose(f);
+    return 1;
+}
+
 #endif /* TELEMETRY_H */

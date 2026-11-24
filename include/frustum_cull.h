@@ -46,12 +46,12 @@ static inline Frustum frustum_extract(const float mvp[16]) {
     f.planes[3].b = mvp[7]  - mvp[5];
     f.planes[3].c = mvp[11] - mvp[9];
     f.planes[3].d = mvp[15] - mvp[13];
-    /* Near:   row3 + row2 */
-    f.planes[4].a = mvp[3]  + mvp[2];
-    f.planes[4].b = mvp[7]  + mvp[6];
-    f.planes[4].c = mvp[11] + mvp[10];
-    f.planes[4].d = mvp[15] + mvp[14];
-    /* Far:    row3 - row2 */
+    /* Near:   row2 (en Vulkan el espacio de clip es 0 <= z <= w, por lo que Near es z >= 0) */
+    f.planes[4].a = mvp[2];
+    f.planes[4].b = mvp[6];
+    f.planes[4].c = mvp[10];
+    f.planes[4].d = mvp[14];
+    /* Far:    row3 - row2 (z <= w) */
     f.planes[5].a = mvp[3]  - mvp[2];
     f.planes[5].b = mvp[7]  - mvp[6];
     f.planes[5].c = mvp[11] - mvp[10];

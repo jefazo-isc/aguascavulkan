@@ -147,7 +147,7 @@ static inline void debug_overlay_add_rect(DebugOverlay *ov,
     float hz = 0.002f;
 
     Vertex v = {0};
-    v.r = r; v.g = g; v.b = b; v.a = 0.95f;
+    v.r = r; v.g = g; v.b = b; v.a = 0.85f;
     v.emission = 10.0f; /* Marca HUD: sin iluminación ni fog */
     v.ny = 1.0f;
 
@@ -172,7 +172,7 @@ static inline void debug_overlay_add_rect_z(DebugOverlay *ov,
     float x1 = ((px + pw) / ov->screenW) * 2.0f - 1.0f;
     float y1 = ((py + ph) / ov->screenH) * 2.0f - 1.0f;
     Vertex v = {0};
-    v.r = r; v.g = g; v.b = b; v.a = 1.0f;
+    v.r = r; v.g = g; v.b = b; v.a = (hz >= 0.0030f) ? 0.72f : ((hz >= 0.0020f) ? 0.86f : 1.0f);
     v.emission = 10.0f;
     v.ny = 1.0f;
     v.x = x0; v.y = y0; v.z = hz; ov->verts[ov->vertCount++] = v;

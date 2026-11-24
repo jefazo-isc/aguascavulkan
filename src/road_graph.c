@@ -4,7 +4,116 @@
 #include <string.h>
 #include <math.h>
 
+static int road_graph_build_edge_lengths(RoadGraph* graph) {
+    if (graph->n_edges == 0) {
+        graph->edge_lengths = NULL;
+        return 1;
+    }
+
+    graph->edge_lengths = (float*)malloc((size_t)graph->n_edges * sizeof(float));
+    if (!graph->edge_lengths) {
+        return 0;
+    }
+
+    for (uint32_t e = 0; e < graph->n_edges; e++) {
+        const RoadEdge* edge = &graph->edges[e];
+        float elen = 0.0f;
+        if (edge->pt_count >= 2 &&
+            (uint64_t)edge->pt_off + (uint64_t)edge->pt_count <= (uint64_t)graph->n_points) {
+            for (uint32_t i = 0; i < edge->pt_count - 1; i++) {
+                RoadPoint a = graph->points[edge->pt_off + i];
+                RoadPoint b = graph->points[edge->pt_off + i + 1];
+                float dx = b.x - a.x;
+                float dy = b.y - a.y;
+                float dz = b.z - a.z;
+                elen += sqrtf(dx * dx + dy * dy + dz * dz);
+            }
+        }
+        graph->edge_lengths[e] = (elen < 0.1f) ? 0.1f : elen;
+    }
+    return 1;
+}
+
+static int road_graph_build_csr(RoadGraph* graph) {
+    uint32_t n_nodes = graph->n_nodes;
+    uint32_t n_edges = graph->n_edges;
+
+    graph->node_edge_offsets = (uint32_t*)calloc((size_t)n_nodes + 1, sizeof(uint32_t));
+    if (!graph->node_edge_offsets) {
+        return 0;
+    }
+
+    if (n_nodes == 0 || n_edges == 0) {
+        graph->total_incidences = 0;
+        return 1;
+    }
+
+    uint64_t total_inc = 0;
+    for (uint32_t e = 0; e < n_edges; e++) {
+        const RoadEdge* edge = &graph->edges[e];
+        if (edge->pt_count < 2) continue;
+        if ((uint64_t)edge->pt_off + (uint64_t)edge->pt_count > (uint64_t)graph->n_points) continue;
+        if (edge->a < n_nodes) {
+            if (graph->node_edge_offsets[edge->a + 1] == UINT32_MAX) return 0;
+            graph->node_edge_offsets[edge->a + 1]++;
+            total_inc++;
+        }
+        if (!edge->oneway && edge->b < n_nodes) {
+            if (graph->node_edge_offsets[edge->b + 1] == UINT32_MAX) return 0;
+            graph->node_edge_offsets[edge->b + 1]++;
+            total_inc++;
+        }
+    }
+
+    if (total_inc > UINT32_MAX) {
+        return 0;
+    }
+
+    for (uint32_t n = 0; n < n_nodes; n++) {
+        graph->node_edge_offsets[n + 1] += graph->node_edge_offsets[n];
+    }
+    graph->total_incidences = (uint32_t)total_inc;
+
+    if (graph->total_incidences == 0) {
+        return 1;
+    }
+
+    graph->node_edge_indices = (uint32_t*)malloc((size_t)graph->total_incidences * sizeof(uint32_t));
+    graph->node_edge_dirs = (uint8_t*)malloc((size_t)graph->total_incidences * sizeof(uint8_t));
+    uint32_t* cursor = (uint32_t*)malloc((size_t)n_nodes * sizeof(uint32_t));
+    if (!graph->node_edge_indices || !graph->node_edge_dirs || !cursor) {
+        free(cursor);
+        return 0;
+    }
+
+    memcpy(cursor, graph->node_edge_offsets, (size_t)n_nodes * sizeof(uint32_t));
+
+    for (uint32_t e = 0; e < n_edges; e++) {
+        const RoadEdge* edge = &graph->edges[e];
+        if (edge->pt_count < 2) continue;
+        if ((uint64_t)edge->pt_off + (uint64_t)edge->pt_count > (uint64_t)graph->n_points) continue;
+        if (edge->a < n_nodes) {
+            uint32_t pos = cursor[edge->a]++;
+            graph->node_edge_indices[pos] = e;
+            graph->node_edge_dirs[pos] = 0;
+        }
+        if (!edge->oneway && edge->b < n_nodes) {
+            uint32_t pos = cursor[edge->b]++;
+            graph->node_edge_indices[pos] = e;
+            graph->node_edge_dirs[pos] = 1;
+        }
+    }
+
+    free(cursor);
+    return 1;
+}
+
 RoadGraph* road_graph_load(const char* filepath) {
+    if (!filepath) {
+        fprintf(stderr, "[RoadGraph] Error: Ruta NULL\n");
+        return NULL;
+    }
+
     FILE* f = fopen(filepath, "rb");
     if (!f) {
         fprintf(stderr, "[RoadGraph] Error: No se pudo abrir %s\n", filepath);
@@ -37,20 +146,22 @@ RoadGraph* road_graph_load(const char* filepath) {
     graph->n_edges = n_edges;
     graph->n_points = n_points;
 
-    graph->nodes = (RoadNode*)malloc(n_nodes * sizeof(RoadNode));
-    graph->edges = (RoadEdge*)malloc(n_edges * sizeof(RoadEdge));
-    graph->points = (RoadPoint*)malloc(n_points * sizeof(RoadPoint));
+    if (n_nodes > 0) graph->nodes = (RoadNode*)malloc((size_t)n_nodes * sizeof(RoadNode));
+    if (n_edges > 0) graph->edges = (RoadEdge*)malloc((size_t)n_edges * sizeof(RoadEdge));
+    if (n_points > 0) graph->points = (RoadPoint*)malloc((size_t)n_points * sizeof(RoadPoint));
 
-    if (!graph->nodes || !graph->edges || !graph->points) {
+    if ((n_nodes > 0 && !graph->nodes) ||
+        (n_edges > 0 && !graph->edges) ||
+        (n_points > 0 && !graph->points)) {
         fprintf(stderr, "[RoadGraph] Error de memoria asignando buffers\n");
         road_graph_free(graph);
         fclose(f);
         return NULL;
     }
 
-    if (fread(graph->nodes, sizeof(RoadNode), n_nodes, f) != n_nodes ||
-        fread(graph->edges, sizeof(RoadEdge), n_edges, f) != n_edges ||
-        fread(graph->points, sizeof(RoadPoint), n_points, f) != n_points) {
+    if ((n_nodes > 0 && fread(graph->nodes, sizeof(RoadNode), n_nodes, f) != n_nodes) ||
+        (n_edges > 0 && fread(graph->edges, sizeof(RoadEdge), n_edges, f) != n_edges) ||
+        (n_points > 0 && fread(graph->points, sizeof(RoadPoint), n_points, f) != n_points)) {
         fprintf(stderr, "[RoadGraph] Error leyendo datos binarios de %s\n", filepath);
         road_graph_free(graph);
         fclose(f);
@@ -58,6 +169,13 @@ RoadGraph* road_graph_load(const char* filepath) {
     }
 
     fclose(f);
+
+    if (!road_graph_build_edge_lengths(graph) || !road_graph_build_csr(graph)) {
+        fprintf(stderr, "[RoadGraph] Error de memoria construyendo CSR/longitudes\n");
+        road_graph_free(graph);
+        return NULL;
+    }
+
     printf("[RoadGraph] Cargado '%s': %u nodos, %u aristas, %u puntos\n",
            filepath, n_nodes, n_edges, n_points);
     return graph;
@@ -65,9 +183,13 @@ RoadGraph* road_graph_load(const char* filepath) {
 
 void road_graph_free(RoadGraph* graph) {
     if (!graph) return;
-    if (graph->nodes) free(graph->nodes);
-    if (graph->edges) free(graph->edges);
-    if (graph->points) free(graph->points);
+    free(graph->nodes);
+    free(graph->edges);
+    free(graph->points);
+    free(graph->edge_lengths);
+    free(graph->node_edge_offsets);
+    free(graph->node_edge_indices);
+    free(graph->node_edge_dirs);
     free(graph);
 }
 
@@ -113,6 +235,9 @@ Mesh* road_graph_build_debug_mesh(const RoadGraph* graph) {
         for (uint32_t i = 0; i < edge->pt_count - 1; i++) {
             uint32_t p_idx1 = edge->pt_off + i;
             uint32_t p_idx2 = edge->pt_off + i + 1;
+            if (p_idx1 >= graph->n_points || p_idx2 >= graph->n_points) {
+                continue;
+            }
             RoadPoint p1 = graph->points[p_idx1];
             RoadPoint p2 = graph->points[p_idx2];
 

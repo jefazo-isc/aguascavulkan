@@ -45,9 +45,11 @@ def parse_maxspeed(speed_str):
         return None
 
 def main():
-    osm_file = "models/osm_cache.xml"
+    osm_file = "models/osm_tercer_anillo.xml"
     if not os.path.exists(osm_file):
-        print(f"Error: {osm_file} no encontrado")
+        osm_file = "models/osm_cache.xml"
+    if not os.path.exists(osm_file):
+        print(f"Error: archivo OSM no encontrado")
         sys.exit(1)
 
     print(f"[RoadGraph] Leyendo {osm_file}...")
@@ -101,15 +103,15 @@ def main():
     node_id_to_idx = {nid: i for i, nid in enumerate(sorted(graph_nodes_set))}
     idx_to_node_id = {i: nid for nid, i in node_id_to_idx.items()}
 
-    # Inicializar terreno DEM con las mismas cotas que el sector y el shader Vulkan
-    # Bounding box del sector: min_lat=21.8690, max_lat=21.8940, min_lon=-102.3110, max_lon=-102.2815
-    min_lat = 21.8690
-    max_lat = 21.8940
-    min_lon = -102.3110
-    max_lon = -102.2815
+    # Inicializar terreno DEM con las mismas cotas que el sector metropolitano y el shader Vulkan
+    # Bounding box metropolitano completo (Tercer Anillo):
+    min_lat = 21.8000
+    max_lat = 21.9500
+    min_lon = -102.3700
+    max_lon = -102.2450
 
-    terrain = TerrainElevation(min_lat, max_lat, min_lon, max_lon, nx=40, ny=40)
-    ROAD_SURFACE_OFFSET = 0.20  # Elevar sobre el asfalto (asfalto=0.12m + radio de rueda)
+    terrain = TerrainElevation(min_lat, max_lat, min_lon, max_lon, nx=64, ny=64)
+    ROAD_SURFACE_OFFSET = 0.12  # Cota exacta del asfalto (road_clearance = 0.12m) para apoyo perfecto de neumáticos
 
     # Cargar traffic_signals.json si existe para mapear signal_groups
     signals_json = "models/traffic_signals.json"
@@ -140,7 +142,7 @@ def main():
         nid = idx_to_node_id[i]
         lat, lon = nodes_geo[nid]
         x, z = geo_to_meters(lat, lon)
-        y = terrain.get_ground_elevation(x, z) + ROAD_SURFACE_OFFSET
+        y = terrain.get_real_topography(x, z) + ROAD_SURFACE_OFFSET
         
         has_signal = nid in signal_nodes
         sg = find_signal_group(x, z) if has_signal else -1
@@ -173,24 +175,84 @@ def main():
         if width <= 0.0:
             width = (lanes_fwd + lanes_rev) * 3.5
 
+        # Detección de puentes elevados y túneles para sincronizar cotas con la malla 3D
+        layer_val = 0
+        try:
+            layer_val = int(tags.get('layer', '0'))
+        except (ValueError, TypeError):
+            pass
+        is_bridge = (tags.get('bridge') in ('yes', 'viaduct', 'cantilever', 'movable')) or (layer_val > 0)
+        is_tunnel = (tags.get('tunnel') in ('yes', 'building_passage', 'covered')) or (layer_val < 0)
+        bridge_elev = (5.5 * max(1, layer_val)) if is_bridge else 0.0
+
+        if is_tunnel:
+            way_meters = [geo_to_meters(nodes_geo[r][0], nodes_geo[r][1]) for r in refs]
+            way_dists = [0.0]
+            for wi in range(len(way_meters) - 1):
+                way_dists.append(way_dists[-1] + math.hypot(way_meters[wi+1][0] - way_meters[wi][0], way_meters[wi+1][1] - way_meters[wi][1]))
+            way_total_len = max(1.0, way_dists[-1])
+            way_ramp_len = min(70.0, way_total_len * 0.30)
+
         # Recorrer puntos y dividir en aristas
         curr_start_node = refs[0]
         curr_pts = [nodes_geo[refs[0]]]
+        curr_ref_indices = [0]
 
-        for r in refs[1:]:
+        for ref_idx, r in enumerate(refs[1:], start=1):
             curr_pts.append(nodes_geo[r])
+            curr_ref_indices.append(ref_idx)
             if r in node_id_to_idx:
                 # Terminar arista
                 u = node_id_to_idx[curr_start_node]
                 v = node_id_to_idx[r]
 
                 if u != v and len(curr_pts) >= 2:
-                    # Convertir polilínea a 3D con DEM
+                    # Convertir polilínea a 3D con DEM y rasante exacta
                     pts_3d = []
-                    for lat, lon in curr_pts:
-                        px, pz = geo_to_meters(lat, lon)
-                        py = terrain.get_ground_elevation(px, pz) + ROAD_SURFACE_OFFSET
-                        pts_3d.append((px, py, pz))
+                    if is_tunnel:
+                        for pi in range(len(curr_pts) - 1):
+                            p0_ll = curr_pts[pi]
+                            p1_ll = curr_pts[pi + 1]
+                            p0_m = geo_to_meters(p0_ll[0], p0_ll[1])
+                            p1_m = geo_to_meters(p1_ll[0], p1_ll[1])
+                            seg_len = math.hypot(p1_m[0] - p0_m[0], p1_m[1] - p0_m[1])
+                            n_sub = max(1, int(math.ceil(seg_len / 6.0)))
+                            d0 = way_dists[curr_ref_indices[pi]]
+                            d1 = way_dists[curr_ref_indices[pi + 1]]
+                            for s in range(n_sub):
+                                t = s / float(n_sub)
+                                px = p0_m[0] + t * (p1_m[0] - p0_m[0])
+                                pz = p0_m[1] + t * (p1_m[1] - p0_m[1])
+                                sd = d0 + t * (d1 - d0)
+                                if sd < way_ramp_len:
+                                    tr = sd / max(1.0, way_ramp_len)
+                                    dip = 0.5 * (1.0 - math.cos(tr * math.pi))
+                                elif sd > (way_total_len - way_ramp_len):
+                                    tr = (way_total_len - sd) / max(1.0, way_ramp_len)
+                                    dip = 0.5 * (1.0 - math.cos(tr * math.pi))
+                                else:
+                                    dip = 1.0
+                                py = terrain.get_real_topography(px, pz) + ROAD_SURFACE_OFFSET - 5.4 * dip
+                                pts_3d.append((px, py, pz))
+                        # Último punto del tramo
+                        p_last_ll = curr_pts[-1]
+                        p_last_m = geo_to_meters(p_last_ll[0], p_last_ll[1])
+                        d_last = way_dists[curr_ref_indices[-1]]
+                        if d_last < way_ramp_len:
+                            tr = d_last / max(1.0, way_ramp_len)
+                            dip = 0.5 * (1.0 - math.cos(tr * math.pi))
+                        elif d_last > (way_total_len - way_ramp_len):
+                            tr = (way_total_len - d_last) / max(1.0, way_ramp_len)
+                            dip = 0.5 * (1.0 - math.cos(tr * math.pi))
+                        else:
+                            dip = 1.0
+                        py = terrain.get_real_topography(p_last_m[0], p_last_m[1]) + ROAD_SURFACE_OFFSET - 5.4 * dip
+                        pts_3d.append((p_last_m[0], py, p_last_m[1]))
+                    else:
+                        for lat, lon in curr_pts:
+                            px, pz = geo_to_meters(lat, lon)
+                            py = terrain.get_real_topography(px, pz) + ROAD_SURFACE_OFFSET + bridge_elev
+                            pts_3d.append((px, py, pz))
 
                     raw_edges.append({
                         "a": u, "b": v,
@@ -207,6 +269,7 @@ def main():
                 # Reiniciar para siguiente tramo
                 curr_start_node = r
                 curr_pts = [nodes_geo[r]]
+                curr_ref_indices = [ref_idx]
 
     # Filtrar aristas de < 2 puntos
     valid_edges = [e for e in raw_edges if len(e["pts"]) >= 2]
@@ -311,14 +374,29 @@ def main():
 
     # Visualización top-down PNG sobre assets/satellite.png
     sat_path = "assets/satellite.png"
+    img = None
     if os.path.exists(sat_path):
         print(f"[RoadGraph] Generando verificación visual PNG sobre {sat_path}...")
         img = Image.open(sat_path).convert("RGB")
+    elif os.path.exists("assets/satellite_0_0.png") and os.path.exists("assets/satellite_1_0.png") and os.path.exists("assets/satellite_0_1.png") and os.path.exists("assets/satellite_1_1.png"):
+        print(f"[RoadGraph] Ensamblando ortofoto satelital desde 4 cuadrantes modulares...")
+        q00 = Image.open("assets/satellite_0_0.png").convert("RGB")
+        q10 = Image.open("assets/satellite_1_0.png").convert("RGB")
+        q01 = Image.open("assets/satellite_0_1.png").convert("RGB")
+        q11 = Image.open("assets/satellite_1_1.png").convert("RGB")
+        qw, qh = q00.size
+        img = Image.new("RGB", (qw * 2, qh * 2))
+        img.paste(q00, (0, 0))
+        img.paste(q10, (qw, 0))
+        img.paste(q01, (0, qh))
+        img.paste(q11, (qw, qh))
+
+    if img is not None:
         img_w, img_h = img.size
         
         # Rango de coordenadas de satellite.png (usado en generate_sector.py)
         origin_lat = 21.8807; origin_lon = -102.2965
-        min_lon = -102.3110; max_lon = -102.2815; min_lat = 21.8690; max_lat = 21.8940
+        min_lon = -102.3700; max_lon = -102.2450; min_lat = 21.8000; max_lat = 21.9500
         min_x, max_z = geo_to_meters(min_lat, min_lon, origin_lat, origin_lon)
         max_x, min_z = geo_to_meters(max_lat, max_lon, origin_lat, origin_lon)
 

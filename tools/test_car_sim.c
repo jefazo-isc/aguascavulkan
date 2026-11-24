@@ -13,7 +13,7 @@ int main(void) {
 
     CarSystem sys;
     memset(&sys, 0, sizeof(CarSystem));
-    sys.mappedInstanceData = (CarInstanceData*)calloc(NUM_CARS, sizeof(CarInstanceData));
+    sys.mappedInstanceDatas[0] = (CarInstanceData*)calloc(NUM_CARS, sizeof(CarInstanceData));
 
     // Inicializar 200 coches simulados
     float cam_x = 0.0f, cam_z = 0.0f;
@@ -27,7 +27,7 @@ int main(void) {
     int nan_detected = 0;
 
     for (int frame = 0; frame < 7200; frame++) {
-        car_system_update(&sys, graph, dt, cam_x, cam_z);
+        car_system_update(&sys, graph, NULL, dt, cam_x, cam_z);
 
         for (int i = 0; i < NUM_CARS; i++) {
             Car* c = &sys.cars[i];
@@ -45,7 +45,7 @@ int main(void) {
         if (nan_detected) break;
     }
 
-    free(sys.mappedInstanceData);
+    free(sys.mappedInstanceDatas[0]);
     road_graph_free(graph);
 
     if (nan_detected) {

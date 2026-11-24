@@ -18,11 +18,18 @@ typedef struct {
 } Vec3;
 
 typedef struct {
+    float u, v;
+} Vec2;
+
+typedef struct {
     PositionUV* positions;
+    Vec2* texCoords;
     Vec3* normals;
     size_t positionCount;
+    size_t texCoordCount;
     size_t normalCount;
     size_t positionsCapacity;
+    size_t texCoordsCapacity;
     size_t normalsCapacity;
 } ObjData;
 
@@ -41,15 +48,19 @@ static void vec3_normalize(Vec3* v) {
 
 static void obj_data_init(ObjData* data) {
     data->positions = NULL;
+    data->texCoords = NULL;
     data->normals = NULL;
     data->positionCount = 0;
+    data->texCoordCount = 0;
     data->normalCount = 0;
     data->positionsCapacity = 0;
+    data->texCoordsCapacity = 0;
     data->normalsCapacity = 0;
 }
 
 static void obj_data_free(ObjData* data) {
     free(data->positions);
+    free(data->texCoords);
     free(data->normals);
     obj_data_init(data);
 }
@@ -63,6 +74,17 @@ static void obj_push_position(ObjData* data, PositionUV pos) {
         data->positionsCapacity = newCap;
     }
     data->positions[data->positionCount++] = pos;
+}
+
+static void obj_push_texcoord(ObjData* data, Vec2 tc) {
+    if (data->texCoordCount >= data->texCoordsCapacity) {
+        size_t newCap = data->texCoordsCapacity == 0 ? 1024 : data->texCoordsCapacity * 2;
+        Vec2* newTC = realloc(data->texCoords, newCap * sizeof(Vec2));
+        if (!newTC) return;
+        data->texCoords = newTC;
+        data->texCoordsCapacity = newCap;
+    }
+    data->texCoords[data->texCoordCount++] = tc;
 }
 
 static void obj_push_normal(ObjData* data, Vec3 norm) {
@@ -153,11 +175,19 @@ static void load_mtl_file(const char* objFilename, const char* mtlFilename,
             sscanf(p + 3, "%f %f %f", &curMat->r, &curMat->g, &curMat->b);
         } else if (curMat && strncmp(p, "map_Kd ", 7) == 0) {
             sscanf(p + 7, "%255s", curMat->mapKd);
-            curMat->a = 0.0f; // Con mapa de textura, mezclar con textura
+            // Solo resetear alpha si no fue ya configurado como matID personalizado (d > 1.0)
+            if (curMat->a <= 1.01f) {
+                curMat->a = 0.0f; // Con mapa de textura estándar, mezclar con textura
+            }
         } else if (curMat && strncmp(p, "d ", 2) == 0) {
             float dVal = 1.0f;
             if (sscanf(p + 2, "%f", &dVal) == 1) {
-                // Opacidad / alpha
+                // Extensión StreetVulkan: d > 1.0 se usa como matID directo (vertex alpha)
+                // e.g. "d 1.3" en photo_mat → matID = 1.3 → photo plane en el shader
+                if (dVal > 1.01f) {
+                    curMat->a = dVal;
+                }
+                // d en rango normal 0..1 = opacidad estándar (reservado)
             }
         }
     }
@@ -169,6 +199,10 @@ static void load_mtl_file(const char* objFilename, const char* mtlFilename,
 // ====================================
 
 Mesh* obj_load(const char* filename) {
+    if (!filename) {
+        fprintf(stderr, "No se pudo abrir el archivo OBJ: ruta NULL\n");
+        return NULL;
+    }
     FILE* f = fopen(filename, "r");
     if (!f) {
         fprintf(stderr, "No se pudo abrir el archivo OBJ: %s\n", filename);
@@ -237,6 +271,13 @@ Mesh* obj_load(const char* filename) {
                 obj_push_normal(&raw, norm);
             }
         }
+        // Línea vt: Coordenadas de textura UV
+        else if (strncmp(line, "vt ", 3) == 0) {
+            Vec2 tc = {0};
+            if (sscanf(line + 3, "%f %f", &tc.u, &tc.v) >= 2) {
+                obj_push_texcoord(&raw, tc);
+            }
+        }
         // Línea f: Caras
         else if (strncmp(line, "f ", 2) == 0) {
             char* ptr = line + 2;
@@ -301,6 +342,15 @@ Mesh* obj_load(const char* filename) {
                         vert.v = raw.positions[posIdx].v;
                     }
 
+                    // Coordenadas UV desde vt (si se especificaron en f v/vt/vn)
+                    if (ref.vt != 0) {
+                        int tcIdx = ref.vt > 0 ? (ref.vt - 1) : ((int)raw.texCoordCount + ref.vt);
+                        if (tcIdx >= 0 && (size_t)tcIdx < raw.texCoordCount) {
+                            vert.u = raw.texCoords[tcIdx].u;
+                            vert.v = raw.texCoords[tcIdx].v;
+                        }
+                    }
+
                     // Normal (usar vn si existe, o autoNormal calculado)
                     if (ref.vn != 0) {
                         int normIdx = ref.vn > 0 ? (ref.vn - 1) : ((int)raw.normalCount + ref.vn);
@@ -353,15 +403,8 @@ Mesh* obj_load(const char* filename) {
 
     mesh->vertices = outVertices;
     mesh->vertexCount = outVertexCount;
-    mesh->indices = malloc(outVertexCount * sizeof(size_t));
-    if (mesh->indices) {
-        for (size_t i = 0; i < outVertexCount; i++) {
-            mesh->indices[i] = i;
-        }
-        mesh->indexCount = outVertexCount;
-    } else {
-        mesh->indexCount = 0;
-    }
+    mesh->indices = NULL;
+    mesh->indexCount = 0;
 
     fprintf(stderr, "Modelo cargado exitosamente: %zu vértices\n", mesh->vertexCount);
     return mesh;

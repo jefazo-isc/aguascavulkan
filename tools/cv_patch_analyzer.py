@@ -12,8 +12,25 @@ class SatellitePatchAnalyzer:
             self.img=cv2.imread(image_path); self.height,self.width=self.img.shape[:2]
             print(f"[OpenCV] Cargada ortofoto satelital: {self.width}x{self.height} px")
         else:
-            self.img=None; self.height,self.width=1024,1024
-            print(f"[OpenCV] Aviso: No se encontró {image_path}, modo simulado.")
+            q_dir = os.path.dirname(image_path) or "assets"
+            q00_p = os.path.join(q_dir, "satellite_0_0.png")
+            q10_p = os.path.join(q_dir, "satellite_1_0.png")
+            q01_p = os.path.join(q_dir, "satellite_0_1.png")
+            q11_p = os.path.join(q_dir, "satellite_1_1.png")
+            if os.path.exists(q00_p) and os.path.exists(q10_p) and os.path.exists(q01_p) and os.path.exists(q11_p):
+                print(f"[OpenCV] Ensamblando ortofoto satelital desde cuadrantes modulares...")
+                q00 = cv2.imread(q00_p)
+                q10 = cv2.imread(q10_p)
+                q01 = cv2.imread(q01_p)
+                q11 = cv2.imread(q11_p)
+                top_row = np.hstack([q00, q10])
+                bot_row = np.hstack([q01, q11])
+                self.img = np.vstack([top_row, bot_row])
+                self.height, self.width = self.img.shape[:2]
+                print(f"[OpenCV] Ortofoto satelital ensamblada: {self.width}x{self.height} px")
+            else:
+                self.img=None; self.height,self.width=1024,1024
+                print(f"[OpenCV] Aviso: No se encontró {image_path} ni cuadrantes modulares, modo simulado.")
 
     def meters_to_pixel(self,x,z):
         u=(x-self.x0)/(self.x1-self.x0); v=(z-self.z0)/(self.z1-self.z0)

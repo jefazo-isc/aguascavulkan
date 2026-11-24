@@ -1,0 +1,38 @@
+name: StreetVulkan CI (DevOps & Quality Gate)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Vulkan, SDL2 and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libsdl2-dev libvulkan-dev glslang-tools python3
+
+      - name: Build engine and shaders
+        run: make clean && make
+
+      - name: Run XP unit tests (C, ASan/UBSan & Python)
+        run: |
+          make test
+          make asan-test
+
+      - name: Run ISO/IEC 25040/25023/19761/29110/27001/29119/9001 checks
+        run: |
+          python3 tools/metrics/estimate_cocomo_fp.py
+          python3 tools/metrics/measure_iso25023.py
+          python3 tools/metrics/measure_maintainability.py
+          python3 tools/metrics/check_traceability.py
+          python3 tools/metrics/audit_iso27001_27034.py
+          python3 tools/metrics/audit_iso29119.py
+          python3 tools/metrics/audit_iso9001_31000.py

@@ -15,9 +15,6 @@ layout(location=10) in float inInstanceBrake;
 layout(push_constant) uniform PushConstants {
     mat4 mvp;
     mat4 model;
-    vec4 sunDir;
-    vec4 skyColor;
-    vec4 timeParams;
 } pc;
 
 layout(location=0) out vec2 fragTexCoord;
@@ -39,12 +36,29 @@ void main(){
         worldMat = mat4(1.0); // identidad - posiciones ya en world space
         finalColor = inColor;
     } else {
-        // Coche instanciado: aplicar transform del coche + modular color con tint
+        // Coche instanciado: aplicar transform del coche
         worldMat = inInstanceModel;
-        finalColor = inColor * vec4(inInstanceTint.rgb, 1.0);
-        // Luz de frenos: si brake>0.5 y pixel es taillight (rojo, emission>0.5) aumentar emisión
-        if (inInstanceBrake > 0.5 && inEmission > 0.5 && inColor.r > 0.7 && inColor.g < 0.2) {
-            finalEmission = 2.5;
+
+        // Modulación selectiva de color:
+        // Mantener ruedas negras, parachoques oscuros, faros y cristales intactos; teñir solo la chapa
+        vec3 carCol;
+        if (inEmission > 0.4) {
+            carCol = inColor.rgb; // Faros y calaveras intactos
+        } else if (inColor.r < 0.28 && inColor.g < 0.28 && inColor.b < 0.28) {
+            carCol = inColor.rgb; // Ruedas y molduras de goma negra intactas
+        } else if (inColor.b > 0.55 && inColor.r < 0.45 && inColor.g > 0.45) {
+            carCol = inColor.rgb; // Parabrisas y ventanas celestes intactos
+        } else {
+            // Chapa / Carrocería principal: modular con el tinte de instancia
+            carCol = inColor.rgb * inInstanceTint.rgb * 1.30;
+        }
+
+        // 🚨 CLAVE: Marcamos finalColor.a = 2.0 para identificar INEQUÍVOCAMENTE al coche
+        finalColor = vec4(carCol, 2.0);
+
+        // Luz de frenos: si brake>0.5 y pixel es taillight (rojo, emission>0.4) aumentar emisión
+        if (inInstanceBrake > 0.5 && inEmission > 0.4 && inColor.r > 0.6 && inColor.g < 0.25) {
+            finalEmission = 3.0;
         }
     }
 

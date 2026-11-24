@@ -1,11 +1,41 @@
 #include "vulkan_pipeline.h"
 #include <stdio.h>
 #include <stdlib.h>
-static uint32_t* read_spv_file(const char* filename, size_t* outSize){
-    FILE* f=fopen(filename,"rb"); if(!f) return NULL;
-    fseek(f,0,SEEK_END); size_t size=ftell(f); rewind(f);
-    uint32_t* code=malloc(size); if(!code){ fclose(f); return NULL; }
-    fread(code,1,size,f); fclose(f); *outSize=size; return code;
+static uint32_t* read_spv_file(const char* filename, size_t* outSize) {
+    if (!filename || !outSize) return NULL;
+    *outSize = 0;
+    FILE* f = fopen(filename, "rb");
+    if (!f) return NULL;
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    long tell = ftell(f);
+    if (tell <= 0 || (tell % 4) != 0) {
+        fprintf(stderr, "[Pipeline] Error: Archivo SPV inválido o tamaño no múltiplo de 4: %s (%ld bytes)\n",
+                filename, tell);
+        fclose(f);
+        return NULL;
+    }
+    size_t size = (size_t)tell;
+    rewind(f);
+
+    uint32_t* code = (uint32_t*)malloc(size);
+    if (!code) {
+        fclose(f);
+        return NULL;
+    }
+    size_t bytesRead = fread(code, 1, size, f);
+    fclose(f);
+    if (bytesRead != size) {
+        fprintf(stderr, "[Pipeline] Error: Lectura incompleta de SPV %s (%zu / %zu bytes)\n",
+                filename, bytesRead, size);
+        free(code);
+        return NULL;
+    }
+    *outSize = size;
+    return code;
 }
 static VkShaderModule create_shader_module(VkDevice device, const char* filename){
     size_t codeSize=0; uint32_t* code=read_spv_file(filename,&codeSize);
@@ -80,14 +110,23 @@ int create_pipeline_and_descriptors(VulkanEngine *eng){
     VkPipelineDynamicStateCreateInfo ds={0}; ds.sType=VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO; ds.dynamicStateCount=2; ds.pDynamicStates=dyn;
     VkPipelineRasterizationStateCreateInfo rast={0}; rast.sType=VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO; rast.polygonMode=VK_POLYGON_MODE_FILL; rast.lineWidth=1.0f; rast.cullMode=VK_CULL_MODE_NONE; rast.frontFace=VK_FRONT_FACE_COUNTER_CLOCKWISE;
     VkPipelineMultisampleStateCreateInfo ms={0}; ms.sType=VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO; ms.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
-    VkPipelineDepthStencilStateCreateInfo dss={0}; dss.sType=VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO; dss.depthTestEnable=VK_TRUE; dss.depthWriteEnable=VK_TRUE; dss.depthCompareOp=VK_COMPARE_OP_LESS;
-    VkPipelineColorBlendAttachmentState cbAtt={0}; cbAtt.colorWriteMask=VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT; cbAtt.blendEnable=VK_FALSE;
+    VkPipelineDepthStencilStateCreateInfo dss={0}; dss.sType=VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO; dss.depthTestEnable=VK_TRUE; dss.depthWriteEnable=VK_TRUE; dss.depthCompareOp=VK_COMPARE_OP_LESS_OR_EQUAL;
+    VkPipelineColorBlendAttachmentState cbAtt={0};
+    cbAtt.colorWriteMask=VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+    cbAtt.blendEnable=VK_TRUE;
+    cbAtt.srcColorBlendFactor=VK_BLEND_FACTOR_SRC_ALPHA;
+    cbAtt.dstColorBlendFactor=VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cbAtt.colorBlendOp=VK_BLEND_OP_ADD;
+    cbAtt.srcAlphaBlendFactor=VK_BLEND_FACTOR_ONE;
+    cbAtt.dstAlphaBlendFactor=VK_BLEND_FACTOR_ZERO;
+    cbAtt.alphaBlendOp=VK_BLEND_OP_ADD;
     VkPipelineColorBlendStateCreateInfo cb={0}; cb.sType=VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO; cb.attachmentCount=1; cb.pAttachments=&cbAtt;
-    VkDescriptorSetLayoutBinding bindings[3]={0};
+    VkDescriptorSetLayoutBinding bindings[4]={0};
     bindings[0].binding=0; bindings[0].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[0].descriptorCount=1; bindings[0].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[1].binding=1; bindings[1].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[1].descriptorCount=1; bindings[1].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[2].binding=2; bindings[2].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; bindings[2].descriptorCount=1; bindings[2].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutCreateInfo li={0}; li.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO; li.bindingCount=3; li.pBindings=bindings;
+    bindings[3].binding=3; bindings[3].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[3].descriptorCount=1; bindings[3].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo li={0}; li.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO; li.bindingCount=4; li.pBindings=bindings;
     if(vkCreateDescriptorSetLayout(eng->device,&li,NULL,&eng->descriptorSetLayout)!=VK_SUCCESS){ vkDestroyShaderModule(eng->device,fragModule,NULL); vkDestroyShaderModule(eng->device,vertModule,NULL); return 0; }
     VkPushConstantRange pcr={0}; pcr.stageFlags=VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT; pcr.offset=0; pcr.size=sizeof(PushConstants);
     VkPipelineLayoutCreateInfo pli={0}; pli.sType=VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO; pli.setLayoutCount=1; pli.pSetLayouts=&eng->descriptorSetLayout; pli.pushConstantRangeCount=1; pli.pPushConstantRanges=&pcr;
@@ -99,19 +138,54 @@ int create_pipeline_and_descriptors(VulkanEngine *eng){
 }
 int create_sync_objects(VulkanEngine *eng){
     VkSemaphoreCreateInfo si={VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,NULL,0};
-    if(vkCreateSemaphore(eng->device,&si,NULL,&eng->imageAvailableSemaphore)!=VK_SUCCESS||vkCreateSemaphore(eng->device,&si,NULL,&eng->renderFinishedSemaphore)!=VK_SUCCESS) return 0;
     VkFenceCreateInfo fi={VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,NULL,VK_FENCE_CREATE_SIGNALED_BIT};
-    if(vkCreateFence(eng->device,&fi,NULL,&eng->inFlightFence)!=VK_SUCCESS) return 0;
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (vkCreateSemaphore(eng->device, &si, NULL, &eng->imageAvailableSemaphores[i]) != VK_SUCCESS ||
+            vkCreateFence(eng->device, &fi, NULL, &eng->inFlightFences[i]) != VK_SUCCESS) {
+            return 0;
+        }
+    }
+
+    eng->renderFinishedSemaphoreCount = eng->imageCount;
+    if (eng->renderFinishedSemaphoreCount > 0) {
+        eng->renderFinishedSemaphores = calloc(eng->renderFinishedSemaphoreCount, sizeof(VkSemaphore));
+        if (!eng->renderFinishedSemaphores) {
+            eng->renderFinishedSemaphoreCount = 0;
+            return 0;
+        }
+        for (uint32_t i = 0; i < eng->renderFinishedSemaphoreCount; i++) {
+            if (vkCreateSemaphore(eng->device, &si, NULL, &eng->renderFinishedSemaphores[i]) != VK_SUCCESS) {
+                return 0;
+            }
+        }
+    }
+
     VkCommandPoolCreateInfo cpi={0}; cpi.sType=VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO; cpi.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; cpi.queueFamilyIndex=eng->graphicsQueueFamily;
     if(vkCreateCommandPool(eng->device,&cpi,NULL,&eng->commandPool)!=VK_SUCCESS) return 0;
-    VkCommandBufferAllocateInfo cai={0}; cai.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; cai.commandPool=eng->commandPool; cai.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount=1;
-    return vkAllocateCommandBuffers(eng->device,&cai,&eng->commandBuffer)==VK_SUCCESS;
+    VkCommandBufferAllocateInfo cai={0}; cai.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; cai.commandPool=eng->commandPool; cai.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount=MAX_FRAMES_IN_FLIGHT;
+    if (vkAllocateCommandBuffers(eng->device,&cai,eng->commandBuffers)!=VK_SUCCESS) return 0;
+
+    eng->currentFrame = 0;
+    return 1;
 }
 void cleanup_pipeline_and_sync(VulkanEngine *eng){
-    if(eng->inFlightFence!=VK_NULL_HANDLE) vkDestroyFence(eng->device,eng->inFlightFence,NULL);
-    if(eng->imageAvailableSemaphore!=VK_NULL_HANDLE) vkDestroySemaphore(eng->device,eng->imageAvailableSemaphore,NULL);
-    if(eng->renderFinishedSemaphore!=VK_NULL_HANDLE) vkDestroySemaphore(eng->device,eng->renderFinishedSemaphore,NULL);
-    if(eng->commandPool!=VK_NULL_HANDLE) vkDestroyCommandPool(eng->device,eng->commandPool,NULL);
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if(eng->inFlightFences[i]!=VK_NULL_HANDLE) { vkDestroyFence(eng->device,eng->inFlightFences[i],NULL); eng->inFlightFences[i] = VK_NULL_HANDLE; }
+        if(eng->imageAvailableSemaphores[i]!=VK_NULL_HANDLE) { vkDestroySemaphore(eng->device,eng->imageAvailableSemaphores[i],NULL); eng->imageAvailableSemaphores[i] = VK_NULL_HANDLE; }
+    }
+    if (eng->renderFinishedSemaphores) {
+        for (uint32_t i = 0; i < eng->renderFinishedSemaphoreCount; i++) {
+            if (eng->renderFinishedSemaphores[i] != VK_NULL_HANDLE) {
+                vkDestroySemaphore(eng->device, eng->renderFinishedSemaphores[i], NULL);
+                eng->renderFinishedSemaphores[i] = VK_NULL_HANDLE;
+            }
+        }
+        free(eng->renderFinishedSemaphores);
+        eng->renderFinishedSemaphores = NULL;
+    }
+    eng->renderFinishedSemaphoreCount = 0;
+    if(eng->commandPool!=VK_NULL_HANDLE) { vkDestroyCommandPool(eng->device,eng->commandPool,NULL); eng->commandPool = VK_NULL_HANDLE; }
     if(eng->graphicsPipeline!=VK_NULL_HANDLE) vkDestroyPipeline(eng->device,eng->graphicsPipeline,NULL);
     if(eng->pipelineLayout!=VK_NULL_HANDLE) vkDestroyPipelineLayout(eng->device,eng->pipelineLayout,NULL);
     if(eng->descriptorSetLayout!=VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(eng->device,eng->descriptorSetLayout,NULL);

@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>StreetVulkan Web — Aguascalientes WebGPU / WebGL2</title>
+  <style>
+    :root {
+      --bg-panel: rgba(11, 16, 26, 0.80);
+      --border-panel: rgba(88, 174, 255, 0.28);
+      --text-main: #e6f0ff;
+      --text-dim: #9ab3d4;
+      --accent: #38bdf8;
+      --good: #4ade80;
+      --warn: #facc15;
+      --bad: #f87171;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0a101d;
+      color: var(--text-main);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    #viewport {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      touch-action: none;
+      cursor: crosshair;
+    }
+
+    .hud-panel {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 10;
+      min-width: 320px;
+      max-width: calc(100vw - 24px);
+      padding: 10px 14px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-panel);
+      border-radius: 8px;
+      backdrop-filter: blur(8px);
+      font-size: 12px;
+      line-height: 1.5;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+
+    .hud-panel.hidden {
+      opacity: 0;
+    }
+
+    .hud-header {
+      color: #22d3ee;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      margin-bottom: 4px;
+      border-bottom: 1px solid rgba(34, 211, 238, 0.22);
+      padding-bottom: 4px;
+    }
+
+    .hud-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .hud-label {
+      color: var(--text-dim);
+    }
+
+    .badge {
+      padding: 0 6px;
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 11px;
+    }
+
+    .badge-vulkan {
+      background: rgba(34, 197, 94, 0.2);
+      color: #4ade80;
+      border: 1px solid rgba(74, 222, 128, 0.45);
+    }
+
+    .badge-webgl {
+      background: rgba(250, 204, 21, 0.2);
+      color: #facc15;
+      border: 1px solid rgba(250, 204, 21, 0.45);
+    }
+
+    .metric-good { color: var(--good); font-weight: 600; }
+    .metric-warn { color: var(--warn); font-weight: 600; }
+    .metric-bad  { color: var(--bad);  font-weight: 600; }
+
+    .toolbar {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      z-index: 12;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      max-width: 340px;
+      justify-content: flex-end;
+    }
+
+    .btn {
+      background: var(--bg-panel);
+      color: var(--text-main);
+      border: 1px solid var(--border-panel);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-family: inherit;
+      font-size: 11px;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .btn:hover, .btn:active {
+      background: rgba(56, 189, 248, 0.25);
+      border-color: var(--accent);
+    }
+
+    .controls-hint {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      z-index: 10;
+      padding: 7px 11px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-panel);
+      border-radius: 6px;
+      font-size: 11px;
+      color: var(--text-dim);
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+    }
+
+    .touch-pad {
+      position: fixed;
+      bottom: 14px;
+      right: 14px;
+      z-index: 12;
+      display: grid;
+      grid-template-columns: repeat(4, 42px);
+      grid-template-rows: repeat(2, 42px);
+      gap: 5px;
+    }
+
+    .pad-btn {
+      background: var(--bg-panel);
+      color: var(--text-main);
+      border: 1px solid var(--border-panel);
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: none;
+    }
+
+    .pad-btn:active {
+      background: rgba(56, 189, 248, 0.35);
+    }
+
+    #loader-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at center, rgba(16, 27, 45, 0.94), rgba(7, 11, 20, 0.98));
+      transition: opacity 0.35s ease;
+      padding: 24px;
+      text-align: center;
+    }
+
+    #loader-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .loader-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #38bdf8;
+      margin-bottom: 10px;
+      letter-spacing: 0.5px;
+    }
+
+    .loader-sub {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 14px;
+    }
+
+    .progress-track {
+      width: min(360px, 85vw);
+      height: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid rgba(56, 189, 248, 0.35);
+    }
+
+    .progress-fill {
+      width: 5%;
+      height: 100%;
+      background: linear-gradient(90deg, #0ea5e9, #22d3ee, #4ade80);
+      transition: width 0.12s linear;
+    }
+
+    #toast-msg {
+      position: fixed;
+      bottom: 64px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      padding: 6px 14px;
+      background: rgba(12, 20, 34, 0.9);
+      border: 1px solid rgba(56, 189, 248, 0.5);
+      border-radius: 6px;
+      font-size: 12px;
+      color: #e0f2fe;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+
+    #toast-msg.visible {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="viewport"></canvas>
+
+  <aside id="telemetry-hud" class="hud-panel">
+    <div class="hud-header">[ISO 25010:2023 TELEMETRIA]</div>
+    <div class="hud-row">
+      <span class="hud-label">Backend:</span>
+      <span id="hud-backend" class="badge badge-vulkan">Inicializando...</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">GPU:</span>
+      <span id="hud-gpu">--</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">Res:</span>
+      <span id="hud-res">--</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">Hora Sim:</span>
+      <span id="hud-time">14:00 (Día)</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">Tráfico WASM:</span>
+      <span id="hud-traffic">F0: N-S Verde</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">FPS:</span>
+      <span id="hud-fps" class="metric-good">--</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">WASM CPU:</span>
+      <span id="hud-cpu-draw">--</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">Chunks:</span>
+      <span id="hud-chunks">--</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">Verts:</span>
+      <span id="hud-verts">--</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">Pos:</span>
+      <span id="hud-pos">954.4, 8.8, 793.1</span>
+    </div>
+  </aside>
+
+  <div class="toolbar">
+    <button id="btn-rolcar" class="btn" title="Volver a Rolcar Paseo de la Cruz [R]">Rolcar [R]</button>
+    <button id="btn-time" class="btn" title="Cambiar hora del día [T]">Hora [T]</button>
+    <button id="btn-flash" class="btn" title="Linterna [F]">Linterna [F]</button>
+    <button id="btn-cull" class="btn" title="Alternar Frustum Culling WASM [K]">Culling [K]</button>
+  </div>
+
+  <div class="controls-hint">
+    Clic/Arrastre: Mirar | WASD: Mover | Shift: Sprint 4x | Space/C: Subir/Bajar | H: HUD
+  </div>
+
+  <div class="touch-pad" aria-label="Controles táctiles de cámara">
+    <button id="btn-sprint" class="pad-btn" title="Sprint">⚡</button>
+    <button id="btn-fwd" class="pad-btn" title="Adelante">▲</button>
+    <button id="btn-up" class="pad-btn" title="Subir">↑</button>
+    <button id="btn-down" class="pad-btn" title="Bajar">↓</button>
+    <button id="btn-left" class="pad-btn" title="Izquierda">◀</button>
+    <button id="btn-back" class="pad-btn" title="Atrás">▼</button>
+    <button id="btn-right" class="pad-btn" title="Derecha">▶</button>
+  </div>
+
+  <div id="toast-msg"></div>
+
+  <div id="loader-overlay">
+    <div class="loader-title">StreetVulkan Web — Aguascalientes</div>
+    <div id="loader-text" class="loader-sub">Cargando motor WebAssembly + WebGPU/Vulkan...</div>
+    <div class="progress-track">
+      <div id="loader-bar" class="progress-fill"></div>
+    </div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

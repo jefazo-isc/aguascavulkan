@@ -200,7 +200,27 @@ def crop_satellite_patch(image_path, x0, z0, x1, z1, map_x0, map_z0, map_x1, map
     
     Devuelve: (imagen PIL recortada, bytes PNG en base64)
     """
-    img = Image.open(image_path)
+    if os.path.exists(image_path):
+        img = Image.open(image_path)
+    else:
+        q_dir = os.path.dirname(image_path) or "assets"
+        q00_p = os.path.join(q_dir, "satellite_0_0.png")
+        q10_p = os.path.join(q_dir, "satellite_1_0.png")
+        q01_p = os.path.join(q_dir, "satellite_0_1.png")
+        q11_p = os.path.join(q_dir, "satellite_1_1.png")
+        if os.path.exists(q00_p) and os.path.exists(q10_p) and os.path.exists(q01_p) and os.path.exists(q11_p):
+            q00 = Image.open(q00_p)
+            q10 = Image.open(q10_p)
+            q01 = Image.open(q01_p)
+            q11 = Image.open(q11_p)
+            qw, qh = q00.size
+            img = Image.new(q00.mode, (qw * 2, qh * 2))
+            img.paste(q00, (0, 0))
+            img.paste(q10, (qw, 0))
+            img.paste(q01, (0, qh))
+            img.paste(q11, (qw, qh))
+        else:
+            raise FileNotFoundError(f"No se encontró {image_path} ni sus cuadrantes modulares")
     w, h = img.size
 
     # Convertir metros a píxeles

@@ -168,6 +168,15 @@ def categorize_building(building_props, poly_area, height, osm_matches, denue_ma
     all_names = " ".join([m['name'].lower() for m in osm_matches + denue_matches])
     all_acts = " ".join([m.get('activity', '').lower() + " " + m.get('amenity', '').lower() + " " + m.get('shop', '').lower() for m in osm_matches + denue_matches])
 
+    if any(k in all_names for k in ['rolcar', 'refaccionaria rogelio', 'refacionaria rogelio']):
+        return {
+            'type': 'rolcar',
+            'label': 'Rolcar / Refaccionaria Rogelio',
+            'color': (0.04, 0.48, 0.20), # Verde Rolcar corporativo
+            'matID': 1.0,
+            'has_sign': True
+        }
+
     if any(k in all_names for k in ['oxxo', '7-eleven', '7 eleven', 'extra', 'circle k']):
         return {
             'type': 'oxxo',
@@ -277,34 +286,44 @@ def classify_all_buildings():
     for d in denue_records:
         poi_grid.insert(d['x'], d['z'], {'x': d['x'], 'z': d['z'], 'name': d['name'], 'activity': d['activity'], 'source': 'DENUE'})
 
-    # Cargar los 32K edificios de overture
-    geojson_path = BASE_DIR / "models" / "overture_buildings.geojson"
-    if not geojson_path.exists():
-        print(f"[ERROR] No existe {geojson_path}")
-        return
-
-    print(f"[Classify] Leyendo {geojson_path}...")
-    with open(geojson_path) as f:
-        data = json.load(f)
-
-    features = data.get("features", [])
-    print(f"[Classify] Procesando {len(features)} edificios...")
+    # Cargar los edificios modulares por anillos (evita sobrecarga de RAM en Python)
+    ring_paths = [
+        BASE_DIR / "models" / "overture_primer_anillo.geojson",
+        BASE_DIR / "models" / "overture_segundo_anillo.geojson",
+        BASE_DIR / "models" / "overture_tercer_anillo.geojson"
+    ]
+    existing_paths = [p for p in ring_paths if p.exists()]
+    if not existing_paths:
+        fallback = BASE_DIR / "models" / "overture_buildings.geojson"
+        if fallback.exists():
+            existing_paths = [fallback]
+        else:
+            print("[ERROR] No se encontraron archivos de edificios Overture")
+            return
 
     classified_results = []
     category_counts = {}
 
-    for idx, feat in enumerate(features):
-        geom = feat.get("geometry", {})
-        coords = geom.get("coordinates", [])
-        if not coords or geom.get("type") != "Polygon":
-            continue
+    for geojson_path in existing_paths:
+        print(f"[Classify] Leyendo {geojson_path.name}...")
+        with open(geojson_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-        poly_geo = coords[0]
-        poly_m = [geo_to_meters(lat, lon) for lon, lat in poly_geo]
-        if not poly_m: continue
+        features = data.get("features", [])
+        print(f"[Classify] Procesando {len(features):,} edificios de {geojson_path.name}...")
 
-        cx = sum(p[0] for p in poly_m) / len(poly_m)
-        cz = sum(p[1] for p in poly_m) / len(poly_m)
+        for idx, feat in enumerate(features):
+            geom = feat.get("geometry", {})
+            coords = geom.get("coordinates", [])
+            if not coords or geom.get("type") != "Polygon":
+                continue
+
+            poly_geo = coords[0]
+            poly_m = [geo_to_meters(lat, lon) for lon, lat in poly_geo]
+            if not poly_m: continue
+
+            cx = sum(p[0] for p in poly_m) / len(poly_m)
+            cz = sum(p[1] for p in poly_m) / len(poly_m)
 
         # Área del polígono
         n = len(poly_m)
@@ -337,13 +356,7 @@ def classify_all_buildings():
             'id': idx,
             'type': cat_info['type'],
             'label': cat_info['label'],
-            'color': cat_info['color'],
-            'matID': cat_info['matID'],
-            'has_sign': cat_info['has_sign'],
-            'cx': cx, 'cz': cz,
-            'area_m2': round(area, 1),
-            'height_m': round(height, 1),
-            'polygon': poly_m
+            'color': cat_info['color']
         })
 
     out_json = BASE_DIR / "models" / "classified_buildings.json"

@@ -1,0 +1,83 @@
+{
+  "scene_description": "Panorámica 360 de un túnel urbano con paredes de columnas de concreto, iluminación artificial y pavimento.",
+  "time_of_day": "day",
+  "weather": "clear",
+  "elements": [
+    {
+      "element_type": "wall",
+      "confidence": 0.95,
+      "bbox": {
+        "x_min": 0.0,
+        "y_min": 0.0,
+        "x_max": 1.0,
+        "y_max": 0.65
+      },
+      "estimated_height_m": 4.5,
+      "estimated_width_m": 40.0,
+      "color_r": 0.65,
+      "color_g": 0.65,
+      "color_b": 0.55,
+      "secondary_color_r": 0.3,
+      "secondary_color_g": 0.2,
+      "secondary_color_b": 0.1,
+      "distance_hint_m": 5.0
+    },
+    {
+      "element_type": "pavement",
+      "confidence": 0.95,
+      "bbox": {
+        "x_min": 0.0,
+        "y_min": 0.5,
+        "x_max": 1.0,
+        "y_max": 0.82
+      },
+      "estimated_height_m": 0.1,
+      "estimated_width_m": 8.0,
+      "color_r": 0.55,
+      "color_g": 0.55,
+      "color_b": 0.5,
+      "secondary_color_r": 0.3,
+      "secondary_color_g": 0.2,
+      "secondary_color_b": 0.1,
+      "distance_hint_m": 4.0
+    },
+    {
+      "element_type": "curb",
+      "confidence": 0.9,
+      "bbox": {
+        "x_min": 0.11,
+        "y_min": 0.57,
+        "x_max": 0.42,
+        "y_max": 0.64
+      },
+      "estimated_height_m": 0.2,
+      "estimated_width_m": 15.0,
+      "color_r": 0.7,
+      "color_g": 0.65,
+      "color_b": 0.5,
+      "secondary_color_r": 0.3,
+      "secondary_color_g": 0.2,
+      "secondary_color_b": 0.1,
+      "distance_hint_m": 3.0
+    },
+    {
+      "element_type": "curb",
+      "confidence": 0.9,
+      "bbox": {
+        "x_min": 0.52,
+        "y_min": 0.55,
+        "x_max": 0.92,
+        "y_max": 0.8
+      },
+      "estimated_height_m": 0.2,
+      "estimated_width_m": 15.0,
+      "color_r": 0.7,
+      "color_g": 0.65,
+      "color_b": 0.5,
+      "secondary_color_r": 0.3,
+      "secondary_color_g": 0.2,
+      "secondary_color_b": 0.1,
+      "distance_hint_m": 3.0
+    }
+  ]
+}

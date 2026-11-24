@@ -1,26 +1,28 @@
 #ifndef VULKAN_TYPES_H
 #define VULKAN_TYPES_H
 
-#include <SDL2/SDL.h>
+typedef struct SDL_Window SDL_Window;
 #include <vulkan/vulkan.h>
 #include "vertex_format.h"
 #include "obj_loader.h"
+#define MAX_FRAMES_IN_FLIGHT 2
+
 #include "traffic_system.h"
 #include "lighting_system.h"
 #include "chunk_system.h"
+#include "sector_system.h"
 #include "debug_overlay.h"
 #include "road_graph.h"
 #include "car_system.h"
+#include "vulkan_memory_pool.h"
 
 typedef struct {
     float mvp[16];        // 64 bytes
     float model[16];      // 64 bytes
-    float sunDir[4];      // 16 bytes: sunX, sunY, sunZ, ambientIntensity
-    float skyColor[4];    // 16 bytes: skyR, skyG, skyB, nightFactor
-    float timeParams[4];  // 16 bytes: simHour, 0, 0, 0
 } PushConstants;
+_Static_assert(sizeof(PushConstants) <= 128, "PushConstants must not exceed Vulkan 1.2 128-byte minimum");
 
-typedef struct {
+typedef struct VulkanEngine {
     // --- Window Reference ---
     SDL_Window *window;
     int framebufferResized;
@@ -28,12 +30,18 @@ typedef struct {
 
     // --- Core Vulkan Instance & Device ---
     VkInstance instance;
+    VkDebugUtilsMessengerEXT debugMessenger;
     VkSurfaceKHR surface;
     VkPhysicalDevice physicalDevice;
     char gpuName[256];
     uint32_t graphicsQueueFamily;
     VkDevice device;
     VkQueue graphicsQueue;
+
+    // --- Subasignadores Centrales de Memoria Vulkan (Tier S) ---
+    VulkanMemoryPool vramBufferPool;  // DEVICE_LOCAL exclusivo para VkBuffer (geometría estática VBOs e IBOs)
+    VulkanMemoryPool vramImagePool;   // DEVICE_LOCAL exclusivo para VkImage (Texturas en Tiling Optimal)
+    VulkanMemoryPool hostVisiblePool; // HOST_VISIBLE | HOST_COHERENT para UBOs, staging y HUDs dynamic
 
     // --- Swapchain ---
     VkSwapchainKHR swapchain;
@@ -47,6 +55,8 @@ typedef struct {
     VkFormat depthFormat;
     VkImage depthImage;
     VkDeviceMemory depthImageMemory;
+    VulkanSuballocation depthImageSub;
+    VkDeviceSize depthImageAllocSize;
     VkImageView depthImageView;
 
     // --- Pipeline & Renderpass ---
@@ -55,19 +65,31 @@ typedef struct {
     VkPipelineLayout pipelineLayout;
     VkPipeline graphicsPipeline;
 
-    // --- Commands & Sync ---
+    // --- Commands & Sync (Doble Buffer Frames in Flight) ---
     VkCommandPool commandPool;
-    VkCommandBuffer commandBuffer;
-    VkSemaphore imageAvailableSemaphore;
-    VkSemaphore renderFinishedSemaphore;
-    VkFence inFlightFence;
+    VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore *renderFinishedSemaphores;
+    uint32_t renderFinishedSemaphoreCount;
+    VkFence inFlightFences[MAX_FRAMES_IN_FLIGHT];
+    uint32_t currentFrame;
 
-    // --- Vertex Buffer Principal (Soporta OBJ / GLB) ---
+    // --- Vertex Buffer Principal (DEVICE_LOCAL VRAM pura) ---
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
     Vertex* vertexData;
-    Vertex* mappedVertexData; // Puntero mapeado persistente para actualizar semáforos
     size_t vertexCount;
+
+    // --- Index Buffer Principal (DEVICE_LOCAL VRAM pura) ---
+    VkBuffer indexBuffer;
+    VkDeviceMemory indexBufferMemory;
+    uint32_t* indexData;
+    size_t indexCount;
+
+    // --- Geometría Auxiliar (Gemini AI OBJs, Photo Planes, Debug RoadGraph) ---
+    VkBuffer auxVertexBuffer;
+    Vertex *auxVertexData;
+    size_t auxVertexCount;
 
     // --- Recursos de Texturas ---
     uint32_t textureWidth;
@@ -75,19 +97,23 @@ typedef struct {
     VkImage textureImage;
     VkDeviceMemory textureImageMemory;
     VkImageView textureImageView;
+    VkImage facadeImage;
+    VkDeviceMemory facadeMemory;
+    VkImageView facadeImageView;
+    VkImage photoImage;          // Textura de foto georeferenciada (binding 3)
+    VkImageView photoImageView;  // View de la textura de foto
     VkBuffer textureStagingBuffer;
     VkDeviceMemory textureStagingMemory;
     VkSampler textureSampler;
 
-    // --- Descriptores ---
+    // --- Descriptores (uno por frame in flight para evitar Data Races) ---
     VkDescriptorSetLayout descriptorSetLayout;
     VkDescriptorPool descriptorPool;
-    VkDescriptorSet descriptorSet;
+    VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT];
 
     // --- Sistema de Iluminación Dinámica (Semáforos, Farolas, Beacons, Linterna) ---
-    VkBuffer lightingBuffer;
-    VkDeviceMemory lightingBufferMemory;
-    LightingUBO *lightingUboMapped;
+    VkBuffer lightingBuffers[MAX_FRAMES_IN_FLIGHT];
+    LightingUBO *lightingUboMapped[MAX_FRAMES_IN_FLIGHT];
     LightingSystem lightingSystem;
 
     // --- Sistema de Grafo Vial ---
@@ -102,15 +128,28 @@ typedef struct {
     // --- Sistema de Chunks + Frustum Culling ---
     ChunkSystem chunkSystem;
     int chunksEnabled; // 1 si chunks.json se cargó correctamente
+    size_t baseVertexCount; // Vértices pertenecientes a la malla base GLTF (cubiertos por chunks)
 
-    // --- HUD Debug Overlay ---
-    VkBuffer hudVertexBuffer;
-    VkDeviceMemory hudVertexBufferMemory;
-    Vertex* hudMappedData;
+    // --- Sistema Modular de Macro-Sectores (<99MB) ---
+    SectorSystem sectorSystem;
+    int useSectorSystem; // 1 si se usan macro-sectores modulares en vez del monolítico
+
+    // --- HUD Debug Overlay (Per-Frame Dynamic Buffers) ---
+    VkBuffer hudVertexBuffers[MAX_FRAMES_IN_FLIGHT];
+    VkDeviceMemory hudVertexBufferMemories[MAX_FRAMES_IN_FLIGHT];
+    Vertex* hudMappedDatas[MAX_FRAMES_IN_FLIGHT];
     DebugOverlay debugOverlay;
     float fpsAccum;
     int fpsFrameCount;
     float currentFps;
+    uint32_t lastDrawCalls;
+    uint32_t lastVisibleVerts;
+    float lastCpuTimeMs;
+    float lastGpuTimeMs;
+    float simCpuAccumMs;
+    VkQueryPool timestampQueryPool;
+    float timestampPeriodNs;
+    int timestampValid[MAX_FRAMES_IN_FLIGHT];
 
     // --- Estado de Pausa y Opciones de Testing ---
     int isPaused;              // 1 si el juego está en pausa

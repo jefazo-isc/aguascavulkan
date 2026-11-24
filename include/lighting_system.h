@@ -7,8 +7,8 @@
 #include <stddef.h>
 #include <math.h>
 
-#define MAX_GPU_LIGHTS 32
-#define MAX_STREETLIGHTS 128
+#define MAX_GPU_LIGHTS 64
+#define MAX_STREETLIGHTS 256
 
 /* Estructura GPU para cada luz puntual (alineación vec4 std140) */
 typedef struct {
@@ -23,8 +23,11 @@ typedef struct {
     float flashlightOn;
     float pad0;
     float pad1;
-    float flashPos[4]; // xyz: posición linterna, w: alcance (m)
-    float flashDir[4]; // xyz: dirección frontal, w: cos(spot angle)
+    float flashPos[4];   // xyz: posición linterna, w: alcance (m)
+    float flashDir[4];   // xyz: dirección frontal, w: cos(spot angle)
+    float sunDir[4];     // xyz: dirección del sol, w: intensidad ambiental
+    float skyColor[4];   // rgb: color del cielo, a: factor nocturno (0.0=día, 1.0=noche)
+    float timeParams[4]; // x: simHour (0-24), yzw: camPos (x, y, z)
 } LightingUBO;
 
 /* Representación interna de una fuente de luz en el mundo */
@@ -67,14 +70,14 @@ static inline void lighting_system_init(LightingSystem *sys, const TrafficSystem
 
         SceneLight *sl = &sys->streetlights[sys->streetlightCount++];
         sl->x = sig->x + 2.0f;
-        sl->y = sig->y + 6.5f; /* Altura estándar de luminaria urbana (6.5m) */
+        sl->y = sig->y + 1.5f; /* Altura estándar de luminaria urbana (~6.5m sobre suelo; sig->y ya incluye +5.0m) */
         sl->z = sig->z + 2.0f;
         /* Luz de vapor de sodio cálida / LED vial moderno (2800K - 3200K) */
         sl->r = 1.0f;
         sl->g = 0.76f;
         sl->b = 0.42f;
-        sl->radius = 26.0f;
-        sl->baseIntensity = 3.2f;
+        sl->radius = 35.0f;
+        sl->baseIntensity = 3.6f;
     }
 }
 
@@ -88,7 +91,7 @@ typedef struct {
     GpuLight light;
 } CandidateLight;
 
-/* Actualiza las 32 luces más influyentes alrededor de la cámara para el fotograma actual */
+/* Actualiza las 64 luces más influyentes alrededor de la cámara para el fotograma actual */
 static inline void lighting_system_update(LightingSystem *sys,
                                           const TrafficSystem *trafficSys,
                                           float simHour,
@@ -107,42 +110,42 @@ static inline void lighting_system_update(LightingSystem *sys,
         streetFactor = 1.0f - (simHour - 5.5f) / 1.5f; /* Amanecer: Apagado gradual */
     }
 
-    CandidateLight candidates[256];
+    CandidateLight candidates[512];
     int candidateCount = 0;
 
     /* 2. Luces dinámicas de Semáforos activos (Rojo, Ámbar o Verde) */
     if (trafficSys) {
-        for (size_t i = 0; i < trafficSys->signalCount && candidateCount < 250; ++i) {
+        for (size_t i = 0; i < trafficSys->signalCount && candidateCount < 500; ++i) {
             const TrafficSignal *sig = &trafficSys->signals[i];
             float dx = sig->x - camPos->x;
-            float dy = (sig->y + 4.5f) - camPos->y;
+            float dy = sig->y - camPos->y;
             float dz = sig->z - camPos->z;
             float d2 = dx * dx + dy * dy + dz * dz;
 
-            /* Si está en un rango razonable de la cámara (160m) */
-            if (d2 < 160.0f * 160.0f) {
+            /* Rango amplio de selección (650m) para que las luces no se apaguen a la distancia */
+            if (d2 < 650.0f * 650.0f) {
                 CandidateLight *c = &candidates[candidateCount++];
                 c->distSq = d2;
                 c->light.posRadius[0] = sig->x;
-                c->light.posRadius[1] = sig->y + 4.2f; /* Altura del cabezal */
+                c->light.posRadius[1] = sig->y; /* Altura real del cabezal */
                 c->light.posRadius[2] = sig->z;
-                c->light.posRadius[3] = 16.0f; /* Radio de luz proyectada sobre el cruce */
+                c->light.posRadius[3] = 22.0f; /* Radio de luz proyectada sobre el cruce */
 
                 if (sig->currentState == TRAFFIC_LIGHT_RED) {
                     c->light.colorIntensity[0] = 1.0f;
                     c->light.colorIntensity[1] = 0.04f;
                     c->light.colorIntensity[2] = 0.04f;
-                    c->light.colorIntensity[3] = 3.6f;
+                    c->light.colorIntensity[3] = 4.2f;
                 } else if (sig->currentState == TRAFFIC_LIGHT_AMBER) {
                     c->light.colorIntensity[0] = 1.0f;
                     c->light.colorIntensity[1] = 0.65f;
                     c->light.colorIntensity[2] = 0.0f;
-                    c->light.colorIntensity[3] = 3.6f;
+                    c->light.colorIntensity[3] = 4.2f;
                 } else { // GREEN
                     c->light.colorIntensity[0] = 0.0f;
                     c->light.colorIntensity[1] = 1.0f;
                     c->light.colorIntensity[2] = 0.35f;
-                    c->light.colorIntensity[3] = 3.6f;
+                    c->light.colorIntensity[3] = 4.2f;
                 }
             }
         }
@@ -150,14 +153,15 @@ static inline void lighting_system_update(LightingSystem *sys,
 
     /* 3. Farolas de Alumbrado Público (cuando cae la tarde o es de noche) */
     if (streetFactor > 0.02f) {
-        for (int i = 0; i < sys->streetlightCount && candidateCount < 250; ++i) {
+        for (int i = 0; i < sys->streetlightCount && candidateCount < 500; ++i) {
             const SceneLight *sl = &sys->streetlights[i];
             float dx = sl->x - camPos->x;
             float dy = sl->y - camPos->y;
             float dz = sl->z - camPos->z;
             float d2 = dx * dx + dy * dy + dz * dz;
 
-            if (d2 < 180.0f * 180.0f) {
+            /* Rango amplio de cobertura (700m) para alumbrado vial continuo a larga distancia */
+            if (d2 < 700.0f * 700.0f) {
                 CandidateLight *c = &candidates[candidateCount++];
                 c->distSq = d2;
                 c->light.posRadius[0] = sl->x;
@@ -177,29 +181,29 @@ static inline void lighting_system_update(LightingSystem *sys,
         /* Beacon 1: Plaza / Centro */
         float bx1 = 0.0f, by1 = 12.0f, bz1 = 0.0f;
         float d2_1 = (bx1 - camPos->x)*(bx1 - camPos->x) + (by1 - camPos->y)*(by1 - camPos->y) + (bz1 - camPos->z)*(bz1 - camPos->z);
-        if (d2_1 < 250.0f * 250.0f && candidateCount < 250) {
+        if (d2_1 < 850.0f * 850.0f && candidateCount < 500) {
             CandidateLight *c = &candidates[candidateCount++];
             c->distSq = d2_1;
             c->light.posRadius[0] = bx1; c->light.posRadius[1] = by1; c->light.posRadius[2] = bz1;
-            c->light.posRadius[3] = 38.0f;
+            c->light.posRadius[3] = 42.0f;
             c->light.colorIntensity[0] = 0.0f; c->light.colorIntensity[1] = 0.88f; c->light.colorIntensity[2] = 1.0f;
-            c->light.colorIntensity[3] = 4.2f;
+            c->light.colorIntensity[3] = 4.5f;
         }
 
         /* Beacon 2: Props AI este */
         float bx2 = 25.0f, by2 = 14.0f, bz2 = 35.0f;
         float d2_2 = (bx2 - camPos->x)*(bx2 - camPos->x) + (by2 - camPos->y)*(by2 - camPos->y) + (bz2 - camPos->z)*(bz2 - camPos->z);
-        if (d2_2 < 250.0f * 250.0f && candidateCount < 250) {
+        if (d2_2 < 850.0f * 850.0f && candidateCount < 500) {
             CandidateLight *c = &candidates[candidateCount++];
             c->distSq = d2_2;
             c->light.posRadius[0] = bx2; c->light.posRadius[1] = by2; c->light.posRadius[2] = bz2;
-            c->light.posRadius[3] = 32.0f;
+            c->light.posRadius[3] = 36.0f;
             c->light.colorIntensity[0] = 0.1f; c->light.colorIntensity[1] = 0.95f; c->light.colorIntensity[2] = 0.85f;
-            c->light.colorIntensity[3] = 3.8f;
+            c->light.colorIntensity[3] = 4.2f;
         }
     }
 
-    /* 5. Selección rápida de las 32 luces más cercanas por Insertion Sort parcial */
+    /* 5. Selección rápida de las 64 luces más cercanas por Insertion Sort parcial */
     int selectCount = candidateCount < MAX_GPU_LIGHTS ? candidateCount : MAX_GPU_LIGHTS;
     for (int i = 0; i < selectCount; ++i) {
         int bestIdx = i;

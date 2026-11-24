@@ -13,14 +13,27 @@ shaders/*.spv
 # Archivos de caché y datasets pesados (>50MB)
 models/*.glb
 models/*.obj
+!models/test.obj
 models/*.zip
+models/sectors/*
+!models/sectors/sector_0_0.glb
+!models/sectors/chunks_0_0.json
 models/tile_cache/
+models/tile_cache_dem/
 models/gemini_cache/
 models/gemini_texture_cache/
 models/overture_buildings.geojson*
+models/overture_tercer_anillo.geojson*
+models/overture_*.geojson*
 models/osm_cache.xml
+models/osm_*.xml
 models/conjunto_de_datos/
 models/diccionario_de_datos/
+models/captura_*.png
+assets/satellite_*.png
+captures/
+logs/
+metodologias/
 
 # Python y entorno
 __pycache__/
@@ -42,3 +55,6 @@ Thumbs.db
 *.txt
 
 .aider*
+
+# Repositorio showcase standalone generado para GitHub/Pages
+/street_vulkan_wasm_repo/

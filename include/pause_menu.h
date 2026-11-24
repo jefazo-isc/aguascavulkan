@@ -1,6 +1,7 @@
 #ifndef PAUSE_MENU_H
 #define PAUSE_MENU_H
 
+#include <SDL2/SDL.h>
 #include "vulkan_types.h"
 #include "math_camera.h"
 #include <stdio.h>
@@ -182,8 +183,25 @@ static inline void pause_menu_cycle_traffic_mode(VulkanEngine *eng, int directio
  * CONTROL DE ENTRADA (TECLADO / RATÓN)
  * ========================================================================= */
 
+static inline void pause_menu_toggle_fullscreen(VulkanEngine *eng) {
+    if (!eng || !eng->window) return;
+    Uint32 flags = SDL_GetWindowFlags(eng->window);
+    int isFullscreen = (flags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) != 0;
+    if (isFullscreen) {
+        SDL_SetWindowFullscreen(eng->window, 0);
+        pause_menu_notify(eng, "[PANTALLA] Modo Ventana");
+    } else {
+        SDL_SetWindowFullscreen(eng->window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        pause_menu_notify(eng, "[PANTALLA] Pantalla Completa (F11)");
+    }
+    eng->framebufferResized = 1;
+}
+
 static inline int pause_menu_handle_hotkeys(VulkanEngine *eng, SDL_Keycode key) {
     switch (key) {
+        case SDLK_F11:
+            pause_menu_toggle_fullscreen(eng);
+            return 1;
         case SDLK_LEFTBRACKET:
             pause_menu_adjust_hour(eng, -1.0f);
             return 1;
@@ -218,6 +236,7 @@ static inline int pause_menu_handle_hotkeys(VulkanEngine *eng, SDL_Keycode key) 
             pause_menu_toggle_telemetry(eng);
             return 1;
         case SDLK_f:
+        case SDLK_l:
             pause_menu_toggle_flashlight(eng);
             return 1;
         default:
@@ -226,6 +245,7 @@ static inline int pause_menu_handle_hotkeys(VulkanEngine *eng, SDL_Keycode key) 
 }
 
 static inline void pause_menu_handle_key(VulkanEngine *eng, SDL_Keycode key, int *outRunning) {
+    static int s_tp = 0;
     if (!eng->isPaused) return;
 
     if (pause_menu_handle_hotkeys(eng, key)) {
@@ -258,12 +278,10 @@ static inline void pause_menu_handle_key(VulkanEngine *eng, SDL_Keycode key, int
                 case MENU_TIME_FREEZE:
                     pause_menu_toggle_time_freeze(eng);
                     break;
-                case MENU_TELEPORT: {
-                    static int s_tp = 0;
+                case MENU_TELEPORT:
                     s_tp = (s_tp - 1 + NUM_TELEPORT_TARGETS) % NUM_TELEPORT_TARGETS;
                     pause_menu_apply_teleport(eng, s_tp);
                     break;
-                }
                 case MENU_CULLING:
                     pause_menu_toggle_culling(eng);
                     break;
@@ -275,6 +293,9 @@ static inline void pause_menu_handle_key(VulkanEngine *eng, SDL_Keycode key, int
                     break;
                 case MENU_TRAFFIC_MODE:
                     pause_menu_cycle_traffic_mode(eng, -1);
+                    break;
+                case MENU_FLASHLIGHT:
+                    pause_menu_toggle_flashlight(eng);
                     break;
                 default: break;
             }
@@ -296,12 +317,10 @@ static inline void pause_menu_handle_key(VulkanEngine *eng, SDL_Keycode key, int
                 case MENU_TIME_FREEZE:
                     pause_menu_toggle_time_freeze(eng);
                     break;
-                case MENU_TELEPORT: {
-                    static int s_tp = 0;
+                case MENU_TELEPORT:
                     s_tp = (s_tp + 1) % NUM_TELEPORT_TARGETS;
                     pause_menu_apply_teleport(eng, s_tp);
                     break;
-                }
                 case MENU_CULLING:
                     pause_menu_toggle_culling(eng);
                     break;
@@ -313,6 +332,9 @@ static inline void pause_menu_handle_key(VulkanEngine *eng, SDL_Keycode key, int
                     break;
                 case MENU_TRAFFIC_MODE:
                     pause_menu_cycle_traffic_mode(eng, +1);
+                    break;
+                case MENU_FLASHLIGHT:
+                    pause_menu_toggle_flashlight(eng);
                     break;
                 default: break;
             }
@@ -341,12 +363,10 @@ static inline void pause_menu_handle_key(VulkanEngine *eng, SDL_Keycode key, int
                 case MENU_TIME_FREEZE:
                     pause_menu_toggle_time_freeze(eng);
                     break;
-                case MENU_TELEPORT: {
-                    static int s_tp = 0;
+                case MENU_TELEPORT:
                     s_tp = (s_tp + 1) % NUM_TELEPORT_TARGETS;
                     pause_menu_apply_teleport(eng, s_tp);
                     break;
-                }
                 case MENU_CULLING:
                     pause_menu_toggle_culling(eng);
                     break;
@@ -358,6 +378,9 @@ static inline void pause_menu_handle_key(VulkanEngine *eng, SDL_Keycode key, int
                     break;
                 case MENU_TRAFFIC_MODE:
                     pause_menu_cycle_traffic_mode(eng, +1);
+                    break;
+                case MENU_FLASHLIGHT:
+                    pause_menu_toggle_flashlight(eng);
                     break;
                 case MENU_QUIT:
                     if (outRunning) *outRunning = 0;
@@ -382,10 +405,19 @@ static inline void pause_menu_render_notification(DebugOverlay *ov, VulkanEngine
     if (eng->notificationTimer <= 0.0f || eng->notificationText[0] == '\0') return;
 
     float screenW = ov->screenW;
-    float notifW = 520.0f;
+    float notifW = 500.0f;
     float notifH = 34.0f;
     float nx = (screenW - notifW) * 0.5f;
     float ny = 14.0f;
+
+    /* Evitar colisión con el HUD de telemetría ISO 25010 en resoluciones compactas (<= 1280px) */
+    if (eng->showTelemetry && nx < 420.0f) {
+        if (screenW >= (notifW + 420.0f)) {
+            nx = screenW - notifW - 20.0f; /* Alinear a la derecha */
+        } else {
+            ny = 240.0f; /* Ubicar debajo del HUD si la pantalla es muy estrecha */
+        }
+    }
 
     /* Fondo oscuro con borde neón ámbar/cyan */
     debug_overlay_add_rect_z(ov, nx, ny, notifW, notifH, 0.04f, 0.07f, 0.12f, 0.0015f);
@@ -407,9 +439,15 @@ static inline void pause_menu_render(DebugOverlay *ov, VulkanEngine *eng) {
 
     /* 2. Dimensiones y centrado de la ventana del menú */
     float panelW = 580.0f;
-    float panelH = 430.0f;
+    float panelH = 480.0f;
     float px = (screenW - panelW) * 0.5f;
     float py = (screenH - panelH) * 0.5f;
+
+    /* En resoluciones compactas con telemetría activa, ubicar el menú a la derecha para no tapar los datos */
+    if (eng->showTelemetry && px < 410.0f && screenW >= (panelW + 410.0f)) {
+        px = screenW - panelW - 15.0f;
+    }
+
     if (px < 10.0f) px = 10.0f;
     if (py < 10.0f) py = 10.0f;
 
@@ -512,8 +550,12 @@ static inline void pause_menu_render(DebugOverlay *ov, VulkanEngine *eng) {
                 snprintf(lineValue, sizeof(lineValue), "< %s >", sModes[eng->trafficSignalMode]);
                 break;
             }
+            case MENU_FLASHLIGHT:
+                snprintf(lineLabel, sizeof(lineLabel), "11. Linterna Frontal");
+                snprintf(lineValue, sizeof(lineValue), "[ %s ]  [F / L]", eng->lightingSystem.flashlightEnabled ? "ACTIVADA" : "DESACTIVADA");
+                break;
             case MENU_QUIT:
-                snprintf(lineLabel, sizeof(lineLabel), "11. Salir del Motor");
+                snprintf(lineLabel, sizeof(lineLabel), "12. Salir del Motor");
                 snprintf(lineValue, sizeof(lineValue), "[Q / Salir]");
                 break;
             default: break;
@@ -523,11 +565,11 @@ static inline void pause_menu_render(DebugOverlay *ov, VulkanEngine *eng) {
         debug_overlay_add_text(ov, px + 310.0f, iy + 4.0f, lineValue, textScale, valR, valG, valB);
     }
 
-    /* 5. Separador horizontal inferior y Guía de Controles */
-    debug_overlay_add_rect_z(ov, px + 18.0f, py + panelH - 42.0f, panelW - 36.0f, 1.5f, 0.18f, 0.32f, 0.48f, 0.0020f);
+    /* 5. Separador horizontal inferior y Guía de Controles con margen holgado */
+    debug_overlay_add_rect_z(ov, px + 18.0f, py + panelH - 46.0f, panelW - 36.0f, 1.5f, 0.18f, 0.32f, 0.48f, 0.0020f);
 
     float footerScale = 1.45f;
-    debug_overlay_add_text(ov, px + 22.0f, py + panelH - 34.0f,
+    debug_overlay_add_text(ov, px + 22.0f, py + panelH - 36.0f,
                            "[ARRIBA/ABAJO]: Seleccionar  [IZQ/DER]: Ajustar  [ENTER/ESPACIO]: Aplicar",
                            footerScale, 0.70f, 0.82f, 0.95f);
     debug_overlay_add_text(ov, px + 22.0f, py + panelH - 18.0f,

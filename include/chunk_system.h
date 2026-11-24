@@ -11,7 +11,7 @@
 #include <string.h>
 #include "frustum_cull.h"
 
-#define MAX_CHUNKS 4096
+#define MAX_CHUNKS 16384
 
 typedef struct {
     int cx, cz;              /* Coordenadas de chunk (grid index) */

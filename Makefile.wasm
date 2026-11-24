@@ -1,0 +1,41 @@
+# Makefile.wasm - WebAssembly Build Targets for StreetVulkan
+# Supports:
+#   1. Pure-Python WAT assembler (`make -f Makefile.wasm wat`) - zero external SDKs
+#   2. Full Emscripten C build (`make -f Makefile.wasm emcc`) - for CI/Emscripten envs
+#   3. Host C ABI syntax/warning check (`make -f Makefile.wasm check-c`)
+
+PYTHON ?= python3
+EMCC ?= emcc
+CC ?= gcc
+
+WAT_SRC = web/street_vulkan_core.wat
+WASM_OUT = web/street_vulkan_core.wasm
+C_SRC = web/main_wasm.c src/math_camera.c
+CFLAGS_COMMON = -Wall -Wextra -O2 -Iinclude
+
+EXPORTED_FUNCS = ["_get_version","_camera_get_vectors","_camera_step","_mat4_perspective_webgpu","_mat4_perspective_webgl","_mat4_lookat","_mat4_multiply","_frustum_extract","_cull_chunks","_traffic_tick"]
+
+.PHONY: all wat emcc check-c clean
+
+all: wat
+
+wat:
+	$(PYTHON) tools/compile_wat_to_wasm.py $(WAT_SRC) $(WASM_OUT)
+
+emcc:
+	$(EMCC) $(C_SRC) -Iinclude -O3 \
+		-s WASM=1 \
+		-s STANDALONE_WASM=1 \
+		-s INITIAL_MEMORY=131072 \
+		-s EXPORTED_FUNCTIONS='$(EXPORTED_FUNCS)' \
+		--no-entry \
+		-o $(WASM_OUT)
+
+check-c:
+	mkdir -p build
+	$(CC) $(CFLAGS_COMMON) -c web/main_wasm.c -o build/main_wasm.o
+	$(CC) $(CFLAGS_COMMON) -c src/math_camera.c -o build/math_camera.o
+	@echo "[Makefile.wasm] C WebAssembly port compiled cleanly with $(CC)"
+
+clean:
+	rm -f build/main_wasm.o build/math_camera.o

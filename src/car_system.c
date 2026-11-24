@@ -8,7 +8,6 @@
 #include "car_system.h"
 #include "vulkan_gltf.h"
 #include "vulkan_swapchain.h"
-#include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,7 +92,182 @@ static int create_gpu_buffer(VkDevice device, VkPhysicalDevice phys,
     return 1;
 }
 
-/* ---------- spawn / respawn ---------- */
+/* ---------- helpers de arista, muestreo y spawn / respawn ---------- */
+
+#define CAR_GRID_SIZE 1024
+#define CAR_GRID_CELL_SIZE 28.0f
+#define CAR_EDGE_HASH_SIZE 512
+#define MIN_FOLLOW_DIST 5.0f
+#define SAFE_TIME_HEADWAY 1.2f
+
+typedef struct {
+    int cell_head[CAR_GRID_SIZE];
+    int car_next[NUM_CARS];
+    int edge_head[CAR_EDGE_HASH_SIZE];
+    int edge_next[NUM_CARS];
+} CarSpatialHash;
+
+static inline uint32_t hash_grid_cell(int gx, int gz) {
+    return (((uint32_t)gx * 73856093u) ^ ((uint32_t)gz * 19349663u)) & (CAR_GRID_SIZE - 1);
+}
+
+static inline uint32_t hash_edge_idx(uint32_t edge_idx) {
+    return (edge_idx * 2654435761u) & (CAR_EDGE_HASH_SIZE - 1);
+}
+
+static float edge_length(const RoadGraph* graph, uint32_t eidx) {
+    if (graph->edge_lengths && eidx < graph->n_edges) {
+        return graph->edge_lengths[eidx];
+    }
+    const RoadEdge* edge = &graph->edges[eidx];
+    float elen = 0.f;
+    if (edge->pt_count >= 2 &&
+        (uint64_t)edge->pt_off + (uint64_t)edge->pt_count <= (uint64_t)graph->n_points) {
+        for (uint32_t i = 0; i < edge->pt_count - 1; i++) {
+            RoadPoint a = graph->points[edge->pt_off + i];
+            RoadPoint b = graph->points[edge->pt_off + i + 1];
+            float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+            elen += sqrtf(dx*dx + dy*dy + dz*dz);
+        }
+    }
+    return (elen < 0.1f) ? 0.1f : elen;
+}
+
+static float edge_approx_heading(const RoadGraph* graph, const RoadEdge* e,
+                                 uint8_t direction, float fallback)
+{
+    if (e->pt_count < 2 ||
+        (uint64_t)e->pt_off + (uint64_t)e->pt_count > (uint64_t)graph->n_points) {
+        return fallback;
+    }
+    RoadPoint p0 = (direction == 0)
+        ? graph->points[e->pt_off]
+        : graph->points[e->pt_off + e->pt_count - 1];
+    RoadPoint p1 = (direction == 0)
+        ? graph->points[e->pt_off + e->pt_count - 1]
+        : graph->points[e->pt_off];
+    float dx = p1.x - p0.x, dz = p1.z - p0.z;
+    if (dx * dx + dz * dz <= 1e-6f) {
+        p0 = (direction == 0)
+            ? graph->points[e->pt_off + e->pt_count - 2]
+            : graph->points[e->pt_off + 1];
+        dx = p1.x - p0.x;
+        dz = p1.z - p0.z;
+    }
+    return (dx * dx + dz * dz > 1e-6f) ? atan2f(dx, dz) : fallback;
+}
+
+/* ---------- elección de siguiente arista en O(1) via CSR ---------- */
+
+static uint32_t pick_next_edge(const RoadGraph* graph,
+                               uint32_t curr_eidx, uint32_t reach_node,
+                               float cur_heading)
+{
+    if (!graph || graph->n_edges == 0) return curr_eidx;
+
+    uint32_t cands[64];
+    uint8_t  dirs[64];
+    int      n = 0;
+
+    if (graph->node_edge_offsets && graph->node_edge_indices && graph->node_edge_dirs) {
+        if (reach_node < graph->n_nodes) {
+            uint32_t start = graph->node_edge_offsets[reach_node];
+            uint32_t end   = graph->node_edge_offsets[reach_node + 1];
+            for (uint32_t idx = start; idx < end && n < 64; idx++) {
+                uint32_t eidx = graph->node_edge_indices[idx];
+                if (eidx == curr_eidx || eidx >= graph->n_edges) continue;
+                const RoadEdge* e = &graph->edges[eidx];
+                if (e->pt_count < 2) continue;
+                cands[n] = eidx;
+                dirs[n]  = graph->node_edge_dirs[idx];
+                n++;
+            }
+        }
+    } else {
+        for (uint32_t i = 0; i < graph->n_edges && n < 64; i++) {
+            if (i == curr_eidx) continue;
+            const RoadEdge* e = &graph->edges[i];
+            if (e->pt_count < 2) continue;
+            if (e->a == reach_node) { cands[n] = i; dirs[n] = 0; n++; }
+            else if (!e->oneway && e->b == reach_node) { cands[n] = i; dirs[n] = 1; n++; }
+        }
+    }
+    if (n == 0) return curr_eidx;
+
+    /* 70% elegir "todo recto" (menor cambio de ángulo) */
+    if (rand() % 100 < 70) {
+        int best = 0;
+        float best_diff = 1e9f;
+        for (int i = 0; i < n; i++) {
+            const RoadEdge* e = &graph->edges[cands[i]];
+            if ((uint64_t)e->pt_off + (uint64_t)e->pt_count > (uint64_t)graph->n_points) continue;
+            uint32_t p0i = e->pt_off + (dirs[i] ? (e->pt_count - 1) : 0);
+            uint32_t p1i = e->pt_off + (dirs[i] ? (e->pt_count - 2) : 1);
+            RoadPoint p0 = graph->points[p0i], p1 = graph->points[p1i];
+            float ang = atan2f(p1.x - p0.x, p1.z - p0.z);
+            float diff = fabsf(ang - cur_heading);
+            while (diff > (float)M_PI) diff -= 2.f * (float)M_PI;
+            diff = fabsf(diff);
+            if (diff < best_diff) { best_diff = diff; best = i; }
+        }
+        return cands[best];
+    }
+    return cands[rand() % n];
+}
+
+/* ---------- interpolar posición en polilínea ---------- */
+
+static void polyline_sample(const RoadGraph* graph, const RoadEdge* edge,
+                            float total_len, float t, uint8_t direction,
+                            float* out_x, float* out_y, float* out_z,
+                            float* fwd_x_out, float* fwd_z_out)
+{
+    if (edge->pt_count < 2 ||
+        (uint64_t)edge->pt_off + (uint64_t)edge->pt_count > (uint64_t)graph->n_points) {
+        *out_x = 0.f; *out_y = 0.f; *out_z = 0.f;
+        *fwd_x_out = 1.f; *fwd_z_out = 0.f;
+        return;
+    }
+
+    float eff_t = direction ? (1.f - t) : t;
+    eff_t = fmaxf(0.f, fminf(1.f, eff_t));
+
+    if (total_len < 0.001f) total_len = 0.001f;
+
+    float target = eff_t * total_len;
+    float accum  = 0.f;
+
+    for (uint32_t i = 0; i < edge->pt_count - 1; i++) {
+        RoadPoint a = graph->points[edge->pt_off + i];
+        RoadPoint b = graph->points[edge->pt_off + i + 1];
+        float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+        float seg = sqrtf(dx*dx + dy*dy + dz*dz);
+
+        if (accum + seg >= target || i == edge->pt_count - 2) {
+            float u = (seg > 1e-4f) ? (target - accum) / seg : 0.f;
+            u = fmaxf(0.f, fminf(1.f, u));
+            *out_x = a.x + u * dx;
+            *out_y = a.y + u * dy;
+            *out_z = a.z + u * dz;
+            float len2 = sqrtf(dx*dx + dz*dz);
+            if (len2 > 1e-4f) {
+                float fx = dx / len2, fz = dz / len2;
+                if (direction) { fx = -fx; fz = -fz; }
+                *fwd_x_out = fx;
+                *fwd_z_out = fz;
+            } else {
+                *fwd_x_out = 1.f;
+                *fwd_z_out = 0.f;
+            }
+            return;
+        }
+        accum += seg;
+    }
+    /* fallback */
+    RoadPoint p = graph->points[edge->pt_off];
+    *out_x = p.x; *out_y = p.y; *out_z = p.z;
+    *fwd_x_out = 1.f; *fwd_z_out = 0.f;
+}
 
 static void spawn_car(Car* car, const RoadGraph* graph, float cam_x, float cam_z) {
     if (!graph || graph->n_edges == 0) return;
@@ -101,12 +275,15 @@ static void spawn_car(Car* car, const RoadGraph* graph, float cam_x, float cam_z
     for (int attempt = 0; attempt < 64; attempt++) {
         uint32_t eidx = (uint32_t)(rand() % (int)graph->n_edges);
         const RoadEdge* e = &graph->edges[eidx];
-        if (e->pt_count < 2) continue;
+        if (e->pt_count < 2 ||
+            (uint64_t)e->pt_off + (uint64_t)e->pt_count > (uint64_t)graph->n_points) {
+            continue;
+        }
 
         RoadPoint mp = graph->points[e->pt_off + e->pt_count / 2];
         float dx = mp.x - cam_x, dz = mp.z - cam_z;
         float dist = sqrtf(dx*dx + dz*dz);
-        if (dist < 50.f || dist > 400.f) continue;
+        if (dist < 30.f || dist > 700.f) continue;
 
         car->edge_idx  = eidx;
         car->t         = randf(0.05f, 0.90f);
@@ -124,15 +301,23 @@ static void spawn_car(Car* car, const RoadGraph* graph, float cam_x, float cam_z
         int tidx = rand() % 8;
         memcpy(car->tint, CAR_TINTS[tidx], sizeof(float)*4);
 
-        car->next_edge_idx = eidx;
-        car->brake         = 0.f;
-        car->pos[0]        = mp.x;
-        car->pos[1]        = mp.y;
-        car->pos[2]        = mp.z;
-        car->heading       = 0.f;
+        car->brake = 0.f;
+        float elen = edge_length(graph, eidx);
+        float wx, wy, wz, fwd_x, fwd_z;
+        polyline_sample(graph, e, elen, car->t, car->direction,
+                        &wx, &wy, &wz, &fwd_x, &fwd_z);
+        float lane_off = (car->lane + 0.5f) * 3.2f;
+        car->pos[0]  = wx + (-fwd_z) * lane_off;
+        car->pos[1]  = wy;
+        car->pos[2]  = wz + ( fwd_x) * lane_off;
+        car->heading = atan2f(fwd_x, fwd_z);
+
+        uint32_t reach     = (car->direction == 0) ? e->b : e->a;
+        car->next_edge_idx = pick_next_edge(graph, eidx, reach, car->heading);
         return;
     }
     /* fallback: colocar en el primer nodo del primer edge */
+    const RoadEdge* e0 = &graph->edges[0];
     car->edge_idx  = 0;
     car->t         = 0.5f;
     car->mesh_type = 0;
@@ -141,105 +326,16 @@ static void spawn_car(Car* car, const RoadGraph* graph, float cam_x, float cam_z
     car->v_desired = CAR_BASE_SPEEDS[0];
     car->v         = car->v_desired;
     memcpy(car->tint, CAR_TINTS[0], sizeof(float)*4);
+    car->brake         = 0.f;
+    car->heading       = edge_approx_heading(graph, e0, car->direction, 0.f);
+    car->next_edge_idx = pick_next_edge(graph, 0, e0->b, car->heading);
     car->pos[0] = cam_x; car->pos[1] = 0.f; car->pos[2] = cam_z;
-}
-
-/* ---------- elección de siguiente arista ---------- */
-
-static uint32_t pick_next_edge(const RoadGraph* graph,
-                               uint32_t curr_eidx, uint32_t reach_node,
-                               float cur_heading)
-{
-    uint32_t cands[64];
-    int     dirs[64];
-    int     n = 0;
-
-    for (uint32_t i = 0; i < graph->n_edges && n < 64; i++) {
-        if (i == curr_eidx) continue;
-        const RoadEdge* e = &graph->edges[i];
-        if (e->a == reach_node) { cands[n]=i; dirs[n]=0; n++; }
-        else if (!e->oneway && e->b == reach_node) { cands[n]=i; dirs[n]=1; n++; }
-    }
-    if (n == 0) return curr_eidx;
-
-    /* 70% elegir "todo recto" (menor cambio de ángulo) */
-    if (rand() % 100 < 70) {
-        int best = 0;
-        float best_diff = 1e9f;
-        for (int i = 0; i < n; i++) {
-            const RoadEdge* e = &graph->edges[cands[i]];
-            uint32_t p0i = e->pt_off + (dirs[i] ? (e->pt_count-1) : 0);
-            uint32_t p1i = e->pt_off + (dirs[i] ? (e->pt_count-2) : 1);
-            RoadPoint p0 = graph->points[p0i], p1 = graph->points[p1i];
-            float ang = atan2f(p1.x-p0.x, p1.z-p0.z);
-            float diff = fabsf(ang - cur_heading);
-            while (diff >  M_PI) diff -= 2.f*(float)M_PI;
-            diff = fabsf(diff);
-            if (diff < best_diff) { best_diff=diff; best=i; }
-        }
-        return cands[best];
-    }
-    return cands[rand() % n];
-}
-
-/* ---------- interpolar posición en polilínea ---------- */
-
-static void polyline_sample(const RoadGraph* graph, const RoadEdge* edge,
-                            float t, uint8_t direction,
-                            float* out_x, float* out_y, float* out_z,
-                            float* fwd_x_out, float* fwd_z_out)
-{
-    float eff_t = direction ? (1.f - t) : t;
-    eff_t = fmaxf(0.f, fminf(1.f, eff_t));
-
-    /* calcular longitud total */
-    float total_len = 0.f;
-    for (uint32_t i = 0; i < edge->pt_count - 1; i++) {
-        RoadPoint a = graph->points[edge->pt_off + i];
-        RoadPoint b = graph->points[edge->pt_off + i + 1];
-        float dx=b.x-a.x, dy=b.y-a.y, dz=b.z-a.z;
-        total_len += sqrtf(dx*dx+dy*dy+dz*dz);
-    }
-    if (total_len < 0.001f) total_len = 0.001f;
-
-    float target = eff_t * total_len;
-    float accum  = 0.f;
-
-    for (uint32_t i = 0; i < edge->pt_count - 1; i++) {
-        RoadPoint a = graph->points[edge->pt_off + i];
-        RoadPoint b = graph->points[edge->pt_off + i + 1];
-        float dx=b.x-a.x, dy=b.y-a.y, dz=b.z-a.z;
-        float seg = sqrtf(dx*dx+dy*dy+dz*dz);
-
-        if (accum + seg >= target || i == edge->pt_count - 2) {
-            float u = (seg > 1e-4f) ? (target - accum) / seg : 0.f;
-            u = fmaxf(0.f, fminf(1.f, u));
-            *out_x = a.x + u*dx;
-            *out_y = a.y + u*dy;
-            *out_z = a.z + u*dz;
-            float len2 = sqrtf(dx*dx+dz*dz);
-            if (len2 > 1e-4f) {
-                float fx = dx/len2, fz = dz/len2;
-                if (direction) { fx=-fx; fz=-fz; }
-                *fwd_x_out = fx;
-                *fwd_z_out = fz;
-            } else {
-                *fwd_x_out = 1.f;
-                *fwd_z_out = 0.f;
-            }
-            return;
-        }
-        accum += seg;
-    }
-    /* fallback */
-    RoadPoint p = graph->points[edge->pt_off];
-    *out_x = p.x; *out_y = p.y; *out_z = p.z;
-    *fwd_x_out = 1.f; *fwd_z_out = 0.f;
 }
 
 /* ---------- init / free ---------- */
 
-int car_system_init(CarSystem* sys, VkDevice device, VkPhysicalDevice physDevice) {
+int car_system_init(CarSystem* sys, VkDevice device, VkPhysicalDevice physDevice,
+                    VkCommandPool commandPool, VkQueue graphicsQueue) {
     memset(sys, 0, sizeof(CarSystem));
     srand((unsigned)time(NULL));
 
@@ -264,39 +360,105 @@ int car_system_init(CarSystem* sys, VkDevice device, VkPhysicalDevice physDevice
     }
     sys->totalVertexCount = total_verts;
 
-    /* --- Vertex buffer unificado para los 6 modelos --- */
+    /* --- Vertex buffer unificado para los 6 modelos en DEVICE_LOCAL --- */
     Vertex* combined = malloc(total_verts * sizeof(Vertex));
-    if (!combined) return 0;
+    if (!combined) {
+        for (int i = 0; i < NUM_CAR_TYPES; i++) {
+            if (sys->car_meshes[i]) {
+                obj_free(sys->car_meshes[i]);
+                sys->car_meshes[i] = NULL;
+            }
+        }
+        return 0;
+    }
     size_t off = 0;
     for (int i = 0; i < NUM_CAR_TYPES; i++) {
         memcpy(combined + off, sys->car_meshes[i]->vertices,
                sys->car_meshes[i]->vertexCount * sizeof(Vertex));
         off += sys->car_meshes[i]->vertexCount;
+        obj_free(sys->car_meshes[i]);
+        sys->car_meshes[i] = NULL;
     }
 
+    VkDeviceSize vertexBufferSize = total_verts * sizeof(Vertex);
     VkMemoryPropertyFlags host_flags =
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-    if (!create_gpu_buffer(device, physDevice, total_verts * sizeof(Vertex),
-                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, host_flags,
-                           &sys->vertexBuffer, &sys->vertexBufferMemory)) {
+    // 1. Buffer temporal Staging en HOST_VISIBLE | HOST_COHERENT
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+    if (!create_gpu_buffer(device, physDevice, vertexBufferSize,
+                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host_flags,
+                           &stagingBuffer, &stagingMemory)) {
         free(combined);
         return 0;
     }
+
     void* p = NULL;
-    vkMapMemory(device, sys->vertexBufferMemory, 0, total_verts*sizeof(Vertex), 0, &p);
-    memcpy(p, combined, total_verts * sizeof(Vertex));
-    vkUnmapMemory(device, sys->vertexBufferMemory);
+    vkMapMemory(device, stagingMemory, 0, vertexBufferSize, 0, &p);
+    memcpy(p, combined, vertexBufferSize);
+    vkUnmapMemory(device, stagingMemory);
     free(combined);
 
-    /* --- Instance buffer (NUM_CARS instancias × 96B) --- */
-    size_t inst_sz = NUM_CARS * sizeof(CarInstanceData);
-    if (!create_gpu_buffer(device, physDevice, inst_sz,
-                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, host_flags,
-                           &sys->instanceBuffer, &sys->instanceBufferMemory)) {
+    // 2. Buffer destino definitivo en VRAM pura (DEVICE_LOCAL)
+    if (!create_gpu_buffer(device, physDevice, vertexBufferSize,
+                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                           &sys->vertexBuffer, &sys->vertexBufferMemory)) {
+        vkDestroyBuffer(device, stagingBuffer, NULL);
+        vkFreeMemory(device, stagingMemory, NULL);
         return 0;
     }
-    vkMapMemory(device, sys->instanceBufferMemory, 0, inst_sz, 0, (void**)&sys->mappedInstanceData);
+
+    // 3. Copia Staging -> DEVICE_LOCAL vía Command Buffer
+    VkCommandBufferAllocateInfo cmdAlloc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = commandPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1
+    };
+    VkCommandBuffer uploadCmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device, &cmdAlloc, &uploadCmd) == VK_SUCCESS) {
+        VkCommandBufferBeginInfo bbi = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+        };
+        vkBeginCommandBuffer(uploadCmd, &bbi);
+
+        VkBufferCopy copyRegion = {
+            .srcOffset = 0,
+            .dstOffset = 0,
+            .size = vertexBufferSize
+        };
+        vkCmdCopyBuffer(uploadCmd, stagingBuffer, sys->vertexBuffer, 1, &copyRegion);
+
+        vkEndCommandBuffer(uploadCmd);
+
+        VkSubmitInfo submitInfo = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &uploadCmd
+        };
+        vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(graphicsQueue);
+
+        vkFreeCommandBuffers(device, commandPool, 1, &uploadCmd);
+    }
+
+    // 4. Liberación inmediata del staging buffer temporal
+    vkDestroyBuffer(device, stagingBuffer, NULL);
+    vkFreeMemory(device, stagingMemory, NULL);
+
+    /* --- Instance buffers (NUM_CARS instancias × 96B por cada frame en vuelo) --- */
+    size_t inst_sz = NUM_CARS * sizeof(CarInstanceData);
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (!create_gpu_buffer(device, physDevice, inst_sz,
+                               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, host_flags,
+                               &sys->instanceBuffers[i], &sys->instanceBufferMemories[i])) {
+            return 0;
+        }
+        vkMapMemory(device, sys->instanceBufferMemories[i], 0, inst_sz, 0, (void**)&sys->mappedInstanceDatas[i]);
+    }
 
     /* --- Static dummy buffer (1 instancia con tint.a=0) para terreno --- */
     if (!create_gpu_buffer(device, physDevice, sizeof(CarInstanceData),
@@ -313,8 +475,8 @@ int car_system_init(CarSystem* sys, VkDevice device, VkPhysicalDevice physDevice
     memcpy(dp, &dummy, sizeof(dummy));
     vkUnmapMemory(device, sys->staticDummyBufferMemory);
 
-    printf("[CarSystem] Listo: 6 tipos (%zu verts), %d instancias (96B/inst)\n",
-           total_verts, NUM_CARS);
+    printf("[CarSystem] Listo: 6 tipos (%zu verts), %d instancias × %d buffers (96B/inst)\n",
+           total_verts, NUM_CARS, MAX_FRAMES_IN_FLIGHT);
     return 1;
 }
 
@@ -322,12 +484,14 @@ void car_system_free(CarSystem* sys, VkDevice device) {
     if (!sys || device == VK_NULL_HANDLE) return;
     vkDeviceWaitIdle(device);
 
-    if (sys->mappedInstanceData) {
-        vkUnmapMemory(device, sys->instanceBufferMemory);
-        sys->mappedInstanceData = NULL;
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (sys->mappedInstanceDatas[i]) {
+            vkUnmapMemory(device, sys->instanceBufferMemories[i]);
+            sys->mappedInstanceDatas[i] = NULL;
+        }
+        if (sys->instanceBuffers[i]      != VK_NULL_HANDLE) vkDestroyBuffer(device, sys->instanceBuffers[i], NULL);
+        if (sys->instanceBufferMemories[i]!= VK_NULL_HANDLE) vkFreeMemory(device, sys->instanceBufferMemories[i], NULL);
     }
-    if (sys->instanceBuffer     != VK_NULL_HANDLE) vkDestroyBuffer(device, sys->instanceBuffer, NULL);
-    if (sys->instanceBufferMemory!= VK_NULL_HANDLE) vkFreeMemory(device, sys->instanceBufferMemory, NULL);
     if (sys->vertexBuffer       != VK_NULL_HANDLE) vkDestroyBuffer(device, sys->vertexBuffer, NULL);
     if (sys->vertexBufferMemory != VK_NULL_HANDLE) vkFreeMemory(device, sys->vertexBufferMemory, NULL);
     if (sys->staticDummyBuffer  != VK_NULL_HANDLE) vkDestroyBuffer(device, sys->staticDummyBuffer, NULL);
@@ -344,52 +508,226 @@ VkBuffer car_system_get_static_dummy(const CarSystem* sys) {
 
 /* ---------- update ---------- */
 
+static void build_car_spatial_hash(CarSpatialHash* grid, const Car cars[NUM_CARS]) {
+    for (int i = 0; i < CAR_GRID_SIZE; i++) grid->cell_head[i] = -1;
+    for (int i = 0; i < CAR_EDGE_HASH_SIZE; i++) grid->edge_head[i] = -1;
+
+    for (int ci = 0; ci < NUM_CARS; ci++) {
+        const Car* car = &cars[ci];
+        if (!isfinite(car->pos[0]) || !isfinite(car->pos[2]) ||
+            fabsf(car->pos[0]) > 1e7f || fabsf(car->pos[2]) > 1e7f) {
+            grid->car_next[ci] = -1;
+            grid->edge_next[ci] = -1;
+            continue;
+        }
+        int gx = (int)floorf(car->pos[0] / CAR_GRID_CELL_SIZE);
+        int gz = (int)floorf(car->pos[2] / CAR_GRID_CELL_SIZE);
+        uint32_t ch = hash_grid_cell(gx, gz);
+        grid->car_next[ci] = grid->cell_head[ch];
+        grid->cell_head[ch] = ci;
+
+        uint32_t eh = hash_edge_idx(car->edge_idx);
+        grid->edge_next[ci] = grid->edge_head[eh];
+        grid->edge_head[eh] = ci;
+    }
+}
+
+static void find_lead_car(const CarSpatialHash* grid, const Car cars[NUM_CARS],
+                          int ci, float elen, float* out_dist_to_lead, float* out_lead_v)
+{
+    const Car* car = &cars[ci];
+    float dist_to_lead = 999.0f;
+    float lead_v = car->v_desired;
+
+    /* Caso 1: En la misma arista, misma dirección y mismo carril */
+    uint32_t eh = hash_edge_idx(car->edge_idx);
+    for (int other_i = grid->edge_head[eh]; other_i >= 0; other_i = grid->edge_next[other_i]) {
+        if (other_i == ci) continue;
+        const Car* other = &cars[other_i];
+        if (other->edge_idx == car->edge_idx &&
+            other->direction == car->direction &&
+            other->lane == car->lane &&
+            other->t > car->t) {
+            float d = (other->t - car->t) * elen;
+            if (d < dist_to_lead) {
+                dist_to_lead = d;
+                lead_v = other->v;
+            }
+        }
+    }
+
+    /* Caso 2: Proximidad espacial euclidiana frontal en intersecciones (vecindad 3x3 de 28m) */
+    if (isfinite(car->pos[0]) && isfinite(car->pos[2]) &&
+        fabsf(car->pos[0]) <= 1e7f && fabsf(car->pos[2]) <= 1e7f) {
+        int gx = (int)floorf(car->pos[0] / CAR_GRID_CELL_SIZE);
+        int gz = (int)floorf(car->pos[2] / CAR_GRID_CELL_SIZE);
+        float fwd_dx = sinf(car->heading);
+        float fwd_dz = cosf(car->heading);
+
+        for (int oz = -1; oz <= 1; oz++) {
+            for (int ox = -1; ox <= 1; ox++) {
+                uint32_t ch = hash_grid_cell(gx + ox, gz + oz);
+                for (int other_i = grid->cell_head[ch]; other_i >= 0; other_i = grid->car_next[other_i]) {
+                    if (other_i == ci) continue;
+                    const Car* other = &cars[other_i];
+                    if (other->edge_idx == car->edge_idx &&
+                        other->direction == car->direction &&
+                        other->lane == car->lane) {
+                        continue;
+                    }
+                    float cdx = other->pos[0] - car->pos[0];
+                    float cdz = other->pos[2] - car->pos[2];
+                    float distSq = cdx * cdx + cdz * cdz;
+                    if (distSq < 49.0f) {
+                        float dotFwd = cdx * fwd_dx + cdz * fwd_dz;
+                        if (dotFwd > 0.5f) {
+                            float d = sqrtf(distSq);
+                            if (d < dist_to_lead) {
+                                dist_to_lead = d;
+                                lead_v = other->v;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    *out_dist_to_lead = dist_to_lead;
+    *out_lead_v = lead_v;
+}
+
+static void car_system_stage_instances(CarSystem* sys);
+
 void car_system_update(CarSystem* sys, const RoadGraph* graph,
+                       const TrafficSystem* traffic,
                        float dt, float cam_x, float cam_z)
 {
-    if (!graph || graph->n_edges == 0 || !sys->mappedInstanceData) return;
+    if (!sys || !graph || graph->n_edges == 0) return;
+
+    /* Pre-pase de respawn para poblar el hash espacial con posiciones y aristas válidas */
+    for (int ci = 0; ci < NUM_CARS; ci++) {
+        Car* car = &sys->cars[ci];
+        float dx = car->pos[0] - cam_x, dz = car->pos[2] - cam_z;
+        float dist = sqrtf(dx * dx + dz * dz);
+        if (dist > 800.f || car->v_desired <= 0.f || isnan(car->pos[0]) || isnan(car->pos[2])) {
+            spawn_car(car, graph, cam_x, cam_z);
+        }
+        if (car->edge_idx >= graph->n_edges) {
+            car->edge_idx = 0;
+            car->next_edge_idx = 0;
+        }
+        if (graph->edges[car->edge_idx].pt_count < 2) {
+            spawn_car(car, graph, cam_x, cam_z);
+        }
+    }
+
+    CarSpatialHash grid;
+    build_car_spatial_hash(&grid, sys->cars);
 
     for (int ci = 0; ci < NUM_CARS; ci++) {
         Car* car = &sys->cars[ci];
-
-        /* Respawn si fuera del anillo o nunca inicializado */
-        float dx = car->pos[0]-cam_x, dz = car->pos[2]-cam_z;
-        float dist = sqrtf(dx*dx + dz*dz);
-        if (dist > 450.f || car->v_desired <= 0.f || isnan(car->pos[0])) {
-            spawn_car(car, graph, cam_x, cam_z);
-        }
-
-        if (car->edge_idx >= graph->n_edges) car->edge_idx = 0;
         const RoadEdge* edge = &graph->edges[car->edge_idx];
-        if (edge->pt_count < 2) { spawn_car(car, graph, cam_x, cam_z); continue; }
-
-        /* ---- calcular longitud del edge para avanzar t ---- */
-        float elen = 0.f;
-        for (uint32_t i = 0; i < edge->pt_count-1; i++) {
-            RoadPoint a = graph->points[edge->pt_off+i];
-            RoadPoint b = graph->points[edge->pt_off+i+1];
-            elen += sqrtf((b.x-a.x)*(b.x-a.x)+(b.y-a.y)*(b.y-a.y)+(b.z-a.z)*(b.z-a.z));
+        if (edge->pt_count < 2 ||
+            (uint64_t)edge->pt_off + (uint64_t)edge->pt_count > (uint64_t)graph->n_points) {
+            continue;
         }
-        if (elen < 0.1f) elen = 0.1f;
 
-        car->v = car->v_desired;
-        car->t += (car->v * dt) / elen;
+        /* ---- obtener longitud precomputada de la arista en O(1) ---- */
+        float elen = edge_length(graph, car->edge_idx);
+
+        /* ---- Verificar semáforo solo si el nodo destino está semaforizado y cerca ---- */
+        uint32_t target_node_idx = (car->direction == 0) ? edge->b : edge->a;
+        float target_speed = car->v_desired;
+        float dist_to_node = (1.0f - car->t) * elen;
+
+        if (traffic && target_node_idx < graph->n_nodes) {
+            const RoadNode* target_node = &graph->nodes[target_node_idx];
+            if (target_node->signal_group >= 0 && dist_to_node <= 35.0f) {
+                TrafficLightState light = traffic_system_get_light_state_at(
+                    traffic, target_node->x, target_node->z, 18.0f);
+
+                if (light == TRAFFIC_LIGHT_RED || light == TRAFFIC_LIGHT_AMBER) {
+                    if (dist_to_node <= 5.0f) {
+                        target_speed = 0.0f; /* Detenerse a 5 metros */
+                    } else {
+                        /* Desaceleración progresiva suave */
+                        float ratio = (dist_to_node - 5.0f) / 30.0f;
+                        target_speed = car->v_desired * ratio * ratio;
+                    }
+                }
+            }
+        }
+
+        /* ---- Modelo de Seguimiento Vehicular (Spatial Hash IDM) ---- */
+        float dist_to_lead = 999.0f;
+        float lead_v = car->v_desired;
+        find_lead_car(&grid, sys->cars, ci, elen, &dist_to_lead, &lead_v);
+
+        float desired_gap = MIN_FOLLOW_DIST + car->v * SAFE_TIME_HEADWAY;
+
+        if (dist_to_lead < desired_gap) {
+            if (dist_to_lead <= MIN_FOLLOW_DIST) {
+                target_speed = 0.0f; /* Freno total: evita superposición */
+            } else {
+                float ratio = (dist_to_lead - MIN_FOLLOW_DIST) / (desired_gap - MIN_FOLLOW_DIST);
+                float safe_v = lead_v * (ratio * ratio);
+                if (safe_v < target_speed) {
+                    target_speed = safe_v;
+                }
+            }
+        }
+
+        /* Suavizado de velocidad y control de luces de freno */
+        if (car->v > target_speed) {
+            float decelRate = 8.5f * dt; /* Tasa de frenado (m/s^2) */
+            car->v -= decelRate;
+            if (car->v < target_speed) car->v = target_speed;
+            car->brake = 1.0f; /* Activar luces de freno traseras */
+        } else if (car->v < target_speed) {
+            float accelRate = 4.0f * dt; /* Aceleración suave */
+            car->v += accelRate;
+            if (car->v > target_speed) car->v = target_speed;
+            car->brake = 0.0f;
+        } else {
+            car->brake = (car->v < 0.1f) ? 1.0f : 0.0f;
+        }
+
+        /* Si el coche tiene velocidad, avanzar t */
+        if (car->v > 0.001f) {
+            car->t += (car->v * dt) / elen;
+        }
 
         /* ---- llegó al nodo destino → elegir siguiente arista ---- */
         if (car->t >= 1.0f) {
             car->t = 0.f;
             uint32_t reach = (car->direction == 0) ? edge->b : edge->a;
-            uint32_t nxt   = pick_next_edge(graph, car->edge_idx, reach, car->heading);
+            uint32_t nxt = car->next_edge_idx;
+            if (nxt >= graph->n_edges || nxt == car->edge_idx ||
+                graph->edges[nxt].pt_count < 2 ||
+                (graph->edges[nxt].a != reach &&
+                 (graph->edges[nxt].oneway || graph->edges[nxt].b != reach))) {
+                nxt = pick_next_edge(graph, car->edge_idx, reach, car->heading);
+            }
             car->edge_idx  = nxt;
             const RoadEdge* ne = &graph->edges[nxt];
             car->direction = (ne->a == reach) ? 0 : 1;
-            car->lane      = 0;
+
+            int max_l = (car->direction == 0) ? maxi(1, ne->lanes_fwd) : maxi(1, ne->lanes_rev);
+            if (car->lane >= max_l) car->lane = (int8_t)(max_l - 1);
+            if (car->lane < 0) car->lane = 0;
+
+            uint32_t next_reach = (car->direction == 0) ? ne->b : ne->a;
+            float next_heading = edge_approx_heading(graph, ne, car->direction, car->heading);
+            car->next_edge_idx = pick_next_edge(graph, nxt, next_reach, next_heading);
+
             edge = ne;
+            elen = edge_length(graph, car->edge_idx);
         }
 
         /* ---- interpolar posición y dirección ---- */
         float wx, wy, wz, fwd_x, fwd_z;
-        polyline_sample(graph, edge, car->t, car->direction,
+        polyline_sample(graph, edge, elen, car->t, car->direction,
                         &wx, &wy, &wz, &fwd_x, &fwd_z);
 
         /* offset de carril: right = (-fwd_z, 0, fwd_x) */
@@ -403,80 +741,108 @@ void car_system_update(CarSystem* sys, const RoadGraph* graph,
         car->heading = atan2f(fwd_x, fwd_z);
 
         /* ---- heading suave a <8m del nodo destino ---- */
-        if (car->t >= 1.f - 8.f/elen && car->next_edge_idx != car->edge_idx) {
+        if (car->t >= 1.f - 8.f / elen &&
+            car->next_edge_idx != car->edge_idx &&
+            car->next_edge_idx < graph->n_edges) {
             const RoadEdge* ne = &graph->edges[car->next_edge_idx];
-            RoadPoint p0 = graph->points[ne->pt_off];
-            RoadPoint p1 = graph->points[ne->pt_off + 1];
-            float ndx = p1.x-p0.x, ndz = p1.z-p0.z;
-            float nlen = sqrtf(ndx*ndx+ndz*ndz);
-            if (nlen > 0.001f) {
-                float target_h = atan2f(ndx/nlen, ndz/nlen);
-                float alpha = (car->t - (1.f-8.f/elen)) / (8.f/elen);
-                alpha = fmaxf(0.f, fminf(1.f, alpha));
-                /* interpolación angular */
-                float dh = target_h - car->heading;
-                while (dh >  (float)M_PI) dh -= 2.f*(float)M_PI;
-                while (dh < -(float)M_PI) dh += 2.f*(float)M_PI;
-                car->heading += alpha * dh;
+            if (ne->pt_count >= 2 &&
+                (uint64_t)ne->pt_off + (uint64_t)ne->pt_count <= (uint64_t)graph->n_points) {
+                uint32_t reach = (car->direction == 0) ? edge->b : edge->a;
+                RoadPoint p0, p1;
+                if (ne->a == reach) {
+                    p0 = graph->points[ne->pt_off];
+                    p1 = graph->points[ne->pt_off + 1];
+                } else {
+                    p0 = graph->points[ne->pt_off + ne->pt_count - 1];
+                    p1 = graph->points[ne->pt_off + ne->pt_count - 2];
+                }
+                float ndx = p1.x - p0.x, ndz = p1.z - p0.z;
+                float nlen = sqrtf(ndx * ndx + ndz * ndz);
+                if (nlen > 0.001f) {
+                    float target_h = atan2f(ndx / nlen, ndz / nlen);
+                    float alpha = (car->t - (1.f - 8.f / elen)) / (8.f / elen);
+                    alpha = fmaxf(0.f, fminf(1.f, alpha));
+                    /* interpolación angular */
+                    float dh = target_h - car->heading;
+                    while (dh >  (float)M_PI) dh -= 2.f * (float)M_PI;
+                    while (dh < -(float)M_PI) dh += 2.f * (float)M_PI;
+                    car->heading += alpha * dh;
+                }
             }
         }
 
         /* ---- sanity check NaN ---- */
         if (isnan(car->pos[0]) || isnan(car->pos[1]) || isnan(car->pos[2]) || isnan(car->heading)) {
-            car->pos[0]=cam_x; car->pos[1]=0.f; car->pos[2]=cam_z; car->heading=0.f;
+            car->pos[0] = cam_x; car->pos[1] = 0.f; car->pos[2] = cam_z; car->heading = 0.f;
         }
     }
+
+    car_system_stage_instances(sys);
 }
 
-/* ---------- render ---------- */
+/* ---------- staging y render ---------- */
 
-void car_system_render(CarSystem* sys, VkCommandBuffer cmdBuffer) {
-    if (!sys || sys->totalVertexCount == 0 || sys->vertexBuffer == VK_NULL_HANDLE) return;
+static void car_system_stage_instances(CarSystem* sys) {
+    if (!sys) return;
 
-    /* Bind 0=vertex buffer del coche, 1=instance buffer */
-    VkBuffer   bufs[2] = { sys->vertexBuffer, sys->instanceBuffer };
-    VkDeviceSize offs[2] = { 0, 0 };
-    vkCmdBindVertexBuffers(cmdBuffer, 0, 2, bufs, offs);
-
-    /* Contar instancias por tipo y calcular offsets en el buffer */
-    uint32_t type_count[NUM_CAR_TYPES]  = {0};
-    uint32_t type_offset[NUM_CAR_TYPES] = {0};
+    memset(sys->typeCounts, 0, sizeof(sys->typeCounts));
+    memset(sys->typeOffsets, 0, sizeof(sys->typeOffsets));
 
     for (int ci = 0; ci < NUM_CARS; ci++) {
         uint8_t t = sys->cars[ci].mesh_type;
-        if (t < NUM_CAR_TYPES) type_count[t]++;
+        if (t >= NUM_CAR_TYPES) t = 0;
+        sys->typeCounts[t]++;
     }
+
     uint32_t running = 0;
     for (int t = 0; t < NUM_CAR_TYPES; t++) {
-        type_offset[t] = running;
-        running += type_count[t];
+        sys->typeOffsets[t] = running;
+        running += sys->typeCounts[t];
     }
 
-    /* Re-ordenar el buffer de instancias por tipo de malla
-       (escritura directa sobre la memoria mapeada ya existente) */
     uint32_t write_idx[NUM_CAR_TYPES];
-    memcpy(write_idx, type_offset, sizeof(write_idx));
+    memcpy(write_idx, sys->typeOffsets, sizeof(write_idx));
 
-    /* Buffer temporal en stack para no alocar heap cada frame */
-    CarInstanceData tmp[NUM_CARS];
     for (int ci = 0; ci < NUM_CARS; ci++) {
         const Car* car = &sys->cars[ci];
-        uint8_t t = car->mesh_type < NUM_CAR_TYPES ? car->mesh_type : 0;
-        CarInstanceData* dst = &tmp[write_idx[t]++];
+        uint8_t t = (car->mesh_type < NUM_CAR_TYPES) ? car->mesh_type : 0;
+        CarInstanceData* dst = &sys->stagedInstances[write_idx[t]++];
         mat4_car(dst->model, car->pos[0], car->pos[1], car->pos[2], car->heading);
-        memcpy(dst->tint,  car->tint, sizeof(float)*4);
-        dst->brake  = car->brake;
-        dst->pad[0] = 0.f; dst->pad[1] = 0.f; dst->pad[2] = 0.f;
+        memcpy(dst->tint, car->tint, sizeof(float) * 4);
+        dst->brake = car->brake;
+        dst->pad[0] = 0.f;
+        dst->pad[1] = 0.f;
+        dst->pad[2] = 0.f;
     }
-    memcpy(sys->mappedInstanceData, tmp, NUM_CARS * sizeof(CarInstanceData));
+
+    sys->instancesStaged = 1;
+}
+
+void car_system_render(CarSystem* sys, VkCommandBuffer cmdBuffer, uint32_t frameIdx) {
+    if (!sys || sys->totalVertexCount == 0 || sys->vertexBuffer == VK_NULL_HANDLE) return;
+    if (frameIdx >= MAX_FRAMES_IN_FLIGHT) frameIdx = 0;
+
+    if (!sys->instancesStaged) {
+        car_system_stage_instances(sys);
+    }
+
+    if (sys->mappedInstanceDatas[frameIdx]) {
+        memcpy(sys->mappedInstanceDatas[frameIdx], sys->stagedInstances,
+               NUM_CARS * sizeof(CarInstanceData));
+    }
+
+    /* Bind 0=vertex buffer del coche, 1=instance buffer del frame actual */
+    VkBuffer   bufs[2] = { sys->vertexBuffer, sys->instanceBuffers[frameIdx] };
+    VkDeviceSize offs[2] = { 0, 0 };
+    vkCmdBindVertexBuffers(cmdBuffer, 0, 2, bufs, offs);
 
     /* Un draw call por tipo, usando sólo el slice correcto */
     for (int t = 0; t < NUM_CAR_TYPES; t++) {
-        if (sys->mesh_vertex_counts[t] == 0 || type_count[t] == 0) continue;
+        if (sys->mesh_vertex_counts[t] == 0 || sys->typeCounts[t] == 0) continue;
         vkCmdDraw(cmdBuffer,
                   sys->mesh_vertex_counts[t],   /* vertex count del modelo */
-                  type_count[t],                 /* sólo las instancias de este tipo */
-                  sys->mesh_vertex_offsets[t],   /* first vertex */
-                  type_offset[t]);               /* first instance */
+                  sys->typeCounts[t],           /* sólo las instancias de este tipo */
+                  sys->mesh_vertex_offsets[t],  /* first vertex */
+                  sys->typeOffsets[t]);         /* first instance */
     }
 }

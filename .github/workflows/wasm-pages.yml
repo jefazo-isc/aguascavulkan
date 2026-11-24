@@ -1,0 +1,74 @@
+name: StreetVulkan WASM & WebGPU Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Rebuild WebAssembly core from WAT
+        run: |
+          python3 tools/compile_wat_to_wasm.py web/street_vulkan_core.wat web/street_vulkan_core.wasm
+          python3 -c 'import pathlib; data = pathlib.Path("web/street_vulkan_core.wasm").read_bytes(); assert data[:8] == b"\x00asm\x01\x00\x00\x00", "Invalid WASM header"'
+
+      - name: Assemble GitHub Pages showcase bundle
+        run: |
+          rm -rf _site
+          mkdir -p _site/web _site/models/sectors
+          cp -r web/. _site/web/
+          for f in \
+            models/texture_atlas_16x16.png \
+            models/traffic_signals.json \
+            models/rolcar_aguascalientes.json \
+            models/utility_poles_rolcar.json; do
+            if [ -f "$f" ]; then cp "$f" _site/models/; fi
+          done
+          for f in \
+            models/sectors/sector_0_0.glb \
+            models/sectors/chunks_0_0.json; do
+            if [ -f "$f" ]; then cp "$f" _site/models/sectors/; fi
+          done
+          if [ -f models/sectors.json ]; then
+            python3 -c 'import json; d = json.load(open("models/sectors.json", "r", encoding="utf-8")); s00 = [s for s in d.get("sectors", []) if s.get("mx") == 0 and s.get("mz") == 0]; out = {**d, "sector_count": len(s00), "total_verts": sum(int(s.get("vert_count", 0)) for s in s00), "sectors": s00}; json.dump(out, open("_site/models/sectors.json", "w", encoding="utf-8"), separators=(",", ":"))'
+          fi
+          if [ -f index.html ]; then
+            cp index.html _site/index.html
+          else
+            python3 -c 'from pathlib import Path; Path("_site/index.html").write_text("<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n  <meta charset=\"UTF-8\" />\n  <meta http-equiv=\"refresh\" content=\"0; url=./web/index.html\" />\n  <title>StreetVulkan Web — Aguascalientes WebAssembly + WebGPU</title>\n  <script>window.location.replace(\"./web/index.html\" + window.location.search + window.location.hash);</script>\n</head>\n<body>\n  <p>Redirigiendo a <a href=\"./web/index.html\">StreetVulkan Web</a>...</p>\n</body>\n</html>\n", encoding="utf-8")'
+          fi
+          touch _site/.nojekyll
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "_site"
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

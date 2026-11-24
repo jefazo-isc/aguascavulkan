@@ -1,47 +1,91 @@
 #include <SDL2/SDL.h>
 #include <stdio.h>
+#include "logger.h"
 #include "math_camera.h"
 #include "vulkan.h"
 #include "pause_menu.h"
 
 int main(void) {
+    logger_init("logs", LOG_LEVEL_INFO);
+    LOG_INFO("Main", "Iniciando StreetVulkan");
+
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        fprintf(stderr, "Error al iniciar SDL: %s\n", SDL_GetError());
+        LOG_ERROR("SDL", "Error al iniciar SDL: %s", SDL_GetError());
+        logger_shutdown();
         return 1;
     }
 
     SDL_Window *window = SDL_CreateWindow(
         "StreetView Vulkan - Cámara Libre",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1024, 768, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        1024, 768, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
 
     if (!window) {
-        fprintf(stderr, "Error al crear la ventana: %s\n", SDL_GetError());
+        LOG_ERROR("SDL", "Error al crear la ventana: %s", SDL_GetError());
         SDL_Quit();
+        logger_shutdown();
         return 1;
     }
 
-    VulkanEngine eng = {0};
+    static VulkanEngine eng = {0};
     if (!vulkan_init(&eng, window)) {
-        fprintf(stderr, "Error inicializando Vulkan\n");
+        LOG_ERROR("Vulkan", "Error inicializando Vulkan");
         SDL_DestroyWindow(window);
         SDL_Quit();
+        logger_shutdown();
         return 1;
     }
 
+    // Renderizar primer fotograma antes de mostrar la ventana para evitar la pantalla negra inicial
+    vulkan_draw(&eng, 0.016f);
+
+    // Mostrar ventana ya completamente cargada y lista para interacción
+    SDL_ShowWindow(window);
+    SDL_RaiseWindow(window);
+    SDL_PumpEvents();
     SDL_SetRelativeMouseMode(SDL_TRUE);
 
     int running = 1;
+    int isMinimized = 0;
     SDL_Event event;
     Uint64 lastTime = SDL_GetPerformanceCounter();
     Uint64 timerFreq = SDL_GetPerformanceFrequency();
     float titleTimer = 0.0f;
 
+    // --- Fixed Timestep (Tier S #1): Física y Simulación a 60 Hz estables ---
+    const float FIXED_DELTA_TIME = 1.0f / 60.0f;
+    float simAccumulator = 0.0f;
+    const char *testFramesEnv = getenv("TEST_FRAMES");
+    int testFrames = testFramesEnv ? atoi(testFramesEnv) : 0;
+    int frameCount = 0;
+    Uint64 testStartTime = SDL_GetPerformanceCounter();
+
+    if (getenv("TEST_PAUSE")) {
+        eng.isPaused = 1;
+        pause_menu_notify(&eng, "Pausa Activada - Menu de Testing");
+    }
+
     while (running) {
+        if (testFrames > 0 && ++frameCount > testFrames) {
+            Uint64 testEndTime = SDL_GetPerformanceCounter();
+            float testDuration = (float)(testEndTime - testStartTime) / (float)timerFreq;
+            float measuredFps = testDuration > 0.0001f ? ((float)testFrames / testDuration) : eng.currentFps;
+            printf("[Test] Renderizados exitosamente %d frames de prueba sin errores.\n", testFrames);
+            printf("[Test Telemetria] FPS: %.1f | Draw Calls: %u | Vertices Totales: %zu (Visibles: %u)\n",
+                   measuredFps, eng.lastDrawCalls, eng.vertexCount, eng.lastVisibleVerts);
+            break;
+        }
         Uint64 currentTime = SDL_GetPerformanceCounter();
         float deltaTime = (float)(currentTime - lastTime) / (float)timerFreq;
         lastTime = currentTime;
-        if (deltaTime > 0.1f) deltaTime = 0.1f;
+        if (deltaTime > 0.25f) deltaTime = 0.25f; // Evitar "spiral of death" tras pausas prolongadas
+
+        // Acumular tiempo para la simulación física a paso fijo
+        simAccumulator += deltaTime;
+        while (simAccumulator >= FIXED_DELTA_TIME) {
+            vulkan_update_simulation(&eng, FIXED_DELTA_TIME);
+            simAccumulator -= FIXED_DELTA_TIME;
+        }
 
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
@@ -77,6 +121,12 @@ int main(void) {
             } else if (event.type == SDL_WINDOWEVENT) {
                 if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
                     event.window.event == SDL_WINDOWEVENT_RESIZED) {
+                    eng.framebufferResized = 1;
+                } else if (event.window.event == SDL_WINDOWEVENT_MINIMIZED) {
+                    isMinimized = 1;
+                } else if (event.window.event == SDL_WINDOWEVENT_RESTORED ||
+                           event.window.event == SDL_WINDOWEVENT_MAXIMIZED) {
+                    isMinimized = 0;
                     eng.framebufferResized = 1;
                 }
             } else if (event.type == SDL_MOUSEMOTION) {
@@ -149,11 +199,17 @@ int main(void) {
             SDL_SetWindowTitle(window, title);
         }
 
-        vulkan_draw(&eng, deltaTime);
+        if (!isMinimized) {
+            vulkan_draw(&eng, deltaTime);
+        } else {
+            SDL_Delay(16); // Evitar consumo innecesario de CPU al estar minimizado
+        }
     }
 
+    LOG_INFO("Main", "Cerrando StreetVulkan");
     vulkan_destroy(&eng);
     SDL_DestroyWindow(window);
     SDL_Quit();
+    logger_shutdown();
     return 0;
 }

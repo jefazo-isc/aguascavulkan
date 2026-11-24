@@ -34,7 +34,31 @@ static VkFormat findSupportedDepthFormat(VkPhysicalDevice physicalDevice) {
     return VK_FORMAT_UNDEFINED;
 }
 
+static void destroy_depth_resources(VulkanEngine *eng) {
+    if (eng->depthImageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(eng->device, eng->depthImageView, NULL);
+        eng->depthImageView = VK_NULL_HANDLE;
+    }
+    if (eng->depthImage != VK_NULL_HANDLE) {
+        vkDestroyImage(eng->device, eng->depthImage, NULL);
+        eng->depthImage = VK_NULL_HANDLE;
+    }
+    if (eng->depthImageSub.memory != VK_NULL_HANDLE) {
+        vulkan_memory_pool_free_suballocation(&eng->vramImagePool, eng->depthImageSub, eng->depthImageAllocSize);
+        eng->depthImageSub = (VulkanSuballocation){0};
+        eng->depthImageAllocSize = 0;
+    }
+    if (eng->depthImageMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(eng->device, eng->depthImageMemory, NULL);
+        eng->depthImageMemory = VK_NULL_HANDLE;
+    }
+}
+
 static int create_depth_resources(VulkanEngine *eng) {
+    eng->depthImageMemory = VK_NULL_HANDLE;
+    eng->depthImageSub = (VulkanSuballocation){0};
+    eng->depthImageAllocSize = 0;
+
     eng->depthFormat = findSupportedDepthFormat(eng->physicalDevice);
     if (eng->depthFormat == VK_FORMAT_UNDEFINED) {
         fprintf(stderr, "No se encontró un formato de profundidad soportado\n");
@@ -64,22 +88,31 @@ static int create_depth_resources(VulkanEngine *eng) {
     VkMemoryRequirements memReqs;
     vkGetImageMemoryRequirements(eng->device, eng->depthImage, &memReqs);
 
-    uint32_t memType = find_memory_type(eng->physicalDevice, memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (memType == UINT32_MAX) {
-        fprintf(stderr, "Tipo de memoria incompatible para profundidad\n");
-        return 0;
-    }
+    if (eng->vramImagePool.device != VK_NULL_HANDLE &&
+        vulkan_memory_pool_bind_image(&eng->vramImagePool, eng->depthImage, &eng->depthImageSub)) {
+        eng->depthImageAllocSize = memReqs.size;
+    } else {
+        uint32_t memType = find_memory_type(eng->physicalDevice, memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (memType == UINT32_MAX) {
+            fprintf(stderr, "Tipo de memoria incompatible para profundidad\n");
+            vkDestroyImage(eng->device, eng->depthImage, NULL);
+            eng->depthImage = VK_NULL_HANDLE;
+            return 0;
+        }
 
-    VkMemoryAllocateInfo allocInfo = {0};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReqs.size;
-    allocInfo.memoryTypeIndex = memType;
+        VkMemoryAllocateInfo allocInfo = {0};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memReqs.size;
+        allocInfo.memoryTypeIndex = memType;
 
-    if (vkAllocateMemory(eng->device, &allocInfo, NULL, &eng->depthImageMemory) != VK_SUCCESS) {
-        fprintf(stderr, "Fallo al asignar memoria de profundidad\n");
-        return 0;
+        if (vkAllocateMemory(eng->device, &allocInfo, NULL, &eng->depthImageMemory) != VK_SUCCESS) {
+            fprintf(stderr, "Fallo al asignar memoria de profundidad\n");
+            vkDestroyImage(eng->device, eng->depthImage, NULL);
+            eng->depthImage = VK_NULL_HANDLE;
+            return 0;
+        }
+        vkBindImageMemory(eng->device, eng->depthImage, eng->depthImageMemory, 0);
     }
-    vkBindImageMemory(eng->device, eng->depthImage, eng->depthImageMemory, 0);
 
     VkImageViewCreateInfo viewInfo = {0};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -98,6 +131,27 @@ static int create_depth_resources(VulkanEngine *eng) {
     }
 
     return 1;
+}
+
+static VkExtent2D choose_swapchain_extent(const VkSurfaceCapabilitiesKHR *surfCaps, int drawableW, int drawableH) {
+    if (surfCaps->currentExtent.width != UINT32_MAX) {
+        return surfCaps->currentExtent;
+    }
+
+    VkExtent2D actualExtent;
+    actualExtent.width = (drawableW > 0) ? (uint32_t)drawableW : 1024;
+    actualExtent.height = (drawableH > 0) ? (uint32_t)drawableH : 768;
+
+    if (actualExtent.width < surfCaps->minImageExtent.width)
+        actualExtent.width = surfCaps->minImageExtent.width;
+    if (actualExtent.width > surfCaps->maxImageExtent.width)
+        actualExtent.width = surfCaps->maxImageExtent.width;
+    if (actualExtent.height < surfCaps->minImageExtent.height)
+        actualExtent.height = surfCaps->minImageExtent.height;
+    if (actualExtent.height > surfCaps->maxImageExtent.height)
+        actualExtent.height = surfCaps->maxImageExtent.height;
+
+    return actualExtent;
 }
 
 int create_swapchain_and_depth(VulkanEngine *eng) {
@@ -121,7 +175,11 @@ int create_swapchain_and_depth(VulkanEngine *eng) {
 
     VkSurfaceCapabilitiesKHR surfCaps;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(eng->physicalDevice, eng->surface, &surfCaps);
-    eng->swapchainExtent = surfCaps.currentExtent;
+    int drawableW = 1024, drawableH = 768;
+    if (eng->window != NULL) {
+        SDL_Vulkan_GetDrawableSize(eng->window, &drawableW, &drawableH);
+    }
+    eng->swapchainExtent = choose_swapchain_extent(&surfCaps, drawableW, drawableH);
     eng->imageCount = surfCaps.minImageCount + 1;
     if (surfCaps.maxImageCount > 0 && eng->imageCount > surfCaps.maxImageCount) {
         eng->imageCount = surfCaps.maxImageCount;
@@ -193,18 +251,7 @@ int recreate_swapchain(VulkanEngine *eng) {
     destroy_framebuffers(eng);
 
     // 2. Destruir recursos de profundidad actuales
-    if (eng->depthImageView != VK_NULL_HANDLE) {
-        vkDestroyImageView(eng->device, eng->depthImageView, NULL);
-        eng->depthImageView = VK_NULL_HANDLE;
-    }
-    if (eng->depthImage != VK_NULL_HANDLE) {
-        vkDestroyImage(eng->device, eng->depthImage, NULL);
-        eng->depthImage = VK_NULL_HANDLE;
-    }
-    if (eng->depthImageMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(eng->device, eng->depthImageMemory, NULL);
-        eng->depthImageMemory = VK_NULL_HANDLE;
-    }
+    destroy_depth_resources(eng);
 
     // 3. Guardar swapchain antiguo
     VkSwapchainKHR oldSwapchain = eng->swapchain;
@@ -228,20 +275,7 @@ int recreate_swapchain(VulkanEngine *eng) {
     VkSurfaceCapabilitiesKHR surfCaps;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(eng->physicalDevice, eng->surface, &surfCaps);
 
-    if (surfCaps.currentExtent.width != UINT32_MAX) {
-        eng->swapchainExtent = surfCaps.currentExtent;
-    } else {
-        eng->swapchainExtent.width = (uint32_t)width;
-        eng->swapchainExtent.height = (uint32_t)height;
-        if (eng->swapchainExtent.width < surfCaps.minImageExtent.width)
-            eng->swapchainExtent.width = surfCaps.minImageExtent.width;
-        if (eng->swapchainExtent.width > surfCaps.maxImageExtent.width)
-            eng->swapchainExtent.width = surfCaps.maxImageExtent.width;
-        if (eng->swapchainExtent.height < surfCaps.minImageExtent.height)
-            eng->swapchainExtent.height = surfCaps.minImageExtent.height;
-        if (eng->swapchainExtent.height > surfCaps.maxImageExtent.height)
-            eng->swapchainExtent.height = surfCaps.maxImageExtent.height;
-    }
+    eng->swapchainExtent = choose_swapchain_extent(&surfCaps, width, height);
 
     eng->imageCount = surfCaps.minImageCount + 1;
     if (surfCaps.maxImageCount > 0 && eng->imageCount > surfCaps.maxImageCount) {
@@ -285,6 +319,9 @@ int recreate_swapchain(VulkanEngine *eng) {
     VkSwapchainKHR newSwapchain;
     if (vkCreateSwapchainKHR(eng->device, &swapchainCreateInfo, NULL, &newSwapchain) != VK_SUCCESS) {
         fprintf(stderr, "Fallo al recrear Swapchain\n");
+        if (oldSwapchain != VK_NULL_HANDLE) {
+            vkDestroySwapchainKHR(eng->device, oldSwapchain, NULL);
+        }
         return 0;
     }
     eng->swapchain = newSwapchain;
@@ -336,18 +373,7 @@ int recreate_swapchain(VulkanEngine *eng) {
 }
 
 void cleanup_swapchain_and_depth(VulkanEngine *eng) {
-    if (eng->depthImageView != VK_NULL_HANDLE) {
-        vkDestroyImageView(eng->device, eng->depthImageView, NULL);
-        eng->depthImageView = VK_NULL_HANDLE;
-    }
-    if (eng->depthImage != VK_NULL_HANDLE) {
-        vkDestroyImage(eng->device, eng->depthImage, NULL);
-        eng->depthImage = VK_NULL_HANDLE;
-    }
-    if (eng->depthImageMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(eng->device, eng->depthImageMemory, NULL);
-        eng->depthImageMemory = VK_NULL_HANDLE;
-    }
+    destroy_depth_resources(eng);
 
     if (eng->swapchainImageViews) {
         for (uint32_t i = 0; i < eng->imageCount; i++) {

@@ -1,55 +1,60 @@
 # 🗺️ StreetVulkan - Roadmap de Funcionalidades Futuras
 
-Este documento establece el plan técnico detallado para implementar las **3 características avanzadas pendientes** en el motor `StreetVulkan`.
+Este documento establece el plan técnico detallado para implementar las características avanzadas pendientes en el motor `StreetVulkan`.
 
 ---
 
-## 🚗 1. Simulación Dinámica de Vehículos y Tráfico en C
-**Objetivo:** Introducir vehículos low-poly animados que circulen por la red vial de la ciudad y respeten los estados de los semáforos (Verde/Amarillo/Rojo).
+## 🚶 1. Simulación Dinámica de Peatones Urbanos en C
+**Objetivo:** Introducir peatones animados que caminen por las banquetas y aceras de la ciudad y crucen en los pasos de cebra respetando las fases de los semáforos.
 
 ### Arquitectura Técnica:
-1. **Estructuras de Datos (`include/traffic_system.h` & `src/traffic_system.c`):**
+1. **Estructuras de Datos (`include/ped_system.h` & `src/ped_system.c`):**
    ```c
-   typedef enum { VEHICLE_DRIVING, VEHICLE_STOPPING, VEHICLE_WAITING_RED } VehicleState;
+   typedef enum { PED_WALKING, PED_WAITING_RED, PED_CROSSING } PedestrianState;
 
    typedef struct {
-       float x, y, z;
+       float pos[3];
+       float heading;
        float speed;
-       float maxSpeed;
-       float dirAngle;
-       int targetIntersectionId;
-       VehicleState state;
-       size_t vertexStartIndex;
-   } Vehicle;
+       uint32_t current_sidewalk_idx;
+       PedestrianState state;
+       float tint[4];
+   } Pedestrian;
    ```
 2. **Lógica de Navegación:**
-   - Los vehículos siguen los nodos viales extraídos de OpenStreetMap (`highway_pts_m`).
-   - En `traffic_system_update()`, cada vehículo consulta la intersección más cercana:
-     - Si la fase actual es **Verde**, acelera hasta `maxSpeed`.
-     - Si la fase es **Amarillo / Rojo**, calcula la distancia de frenado y se detiene antes del paso peatonal.
-3. **Malla 3D Pixel-Art:**
-   - Modelos de vehículos en 3D en estilo low-poly (sedán, autobús, camioneta) mapeados a baldosas de $16 \times 16$ px en el atlas.
+   - Los peatones se desplazan sobre la malla de banquetas y cruzan por las marcas de cebra cuando el semáforo vehicular está en rojo.
+3. **Malla 3D e Instancing GPU:**
+   - Carga del modelo low-poly `models/peds/ped.glb`.
+   - Renderizado instanciado masivo en GPU con buffer dinámico mapeado por frame en vuelo (`MAX_FRAMES_IN_FLIGHT = 2`).
 
 ---
 
-## 🌙 2. Ciclo Día/Noche e Iluminación Dinámica
-**Objetivo:** Transición continua del tiempo ($0.0 \to 24.0\text{ horas}$) modificando la luz solar, el color del cielo y activando la iluminación de ventanas y farolas al anochecer.
+## 🎨 2. Pipeline 2D Separado, Alpha Blending y Font Atlas
+**Objetivo:** Soportar transparencias reales en la escena 3D y renderizar la interfaz de usuario/telemetría mediante texturas tipográficas eficientes.
 
 ### Arquitectura Técnica:
-1. **Controles en CPU (`src/main.c` / `src/vulkan.c`):**
-   - Variable `timeOfDay` incrementada por `deltaTime`.
-   - Cálculo de la posición del Sol:
-     $$\vec{L} = (\cos(\theta), \sin(\theta), 0.3), \quad \theta = \frac{\text{timeOfDay}}{24.0} \times 2\pi$$
-   - Interpolación de paleta de colores del cielo (Azul Día $\to$ Naranja Atardecer $\to$ Azul Marino Noche).
-2. **Shaders GLSL (`shaders/vertex.vert` & `shaders/fragment.frag`):**
-   - Enviar `timeOfDay` y $\vec{L}$ mediante *PushConstants* o *Uniform Buffers*.
-   - Multiplicador de Emisión Nocturna:
-     $$\text{FinalColor} = \text{Diffuse} \times \text{Ambient} + \text{Emission} \times \text{NightFactor}$$
-     Durante la noche, las ventanas de edificios clasificados y los lentes de los semáforos destacan en la oscuridad.
+1. **Pipeline 2D con Mezcla Alfa (`src/vulkan_pipeline.c`):**
+   - Configuración de un pipeline secundario con `blendEnable = VK_TRUE` (`VK_BLEND_FACTOR_SRC_ALPHA`, `VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA`) y `depthTestEnable = VK_FALSE`.
+2. **Font Atlas (`include/debug_overlay.h`):**
+   - Sustituir la generación por CPU de ~30,000 micro-vértices geométricos por frame por un atlas de texturas tipográficas (reducción a ~600 vértices de quads texturizados).
+3. **Transparencias Reales:**
+   - Soporte para vidrios de vehículos, agua/fuentes y follaje con mezcla alfa.
 
 ---
 
-## 🏛️ 3. Generación de Monumentos Únicos con la API de Gemini
+## ☀️ 3. Sombras Dinámicas (Shadow Mapping) y Control Horario
+**Objetivo:** Proyectar sombras direccionales nítidas de edificios y farolas en tiempo real y coordinar el encendido/apagado horario de farolas.
+
+### Arquitectura Técnica:
+1. **Render Pass de Profundidad (Shadow Map):**
+   - Pase previo de renderizado a un attachment de solo profundidad desde la perspectiva ortográfica de la luz solar direccional (`pc.sunDir`).
+   - Muestreo con `sampler2DShadow` / `textureProj` en `shaders/fragment.frag` para atenuar la iluminación solar directa en zonas en sombra.
+2. **Encendido Reactivo de Alumbrado Público:**
+   - Activación gradual de las 64 luces puntuales viales y de la emisión en ventanas entre las 18:30 y las 06:30 de la simulación horaria.
+
+---
+
+## 🏛️ 4. Generación de Monumentos Únicos con la API de Gemini
 **Objetivo:** Sustituir edificios históricos o icónicos por modelos 3D detallados generados automáticamente por la API de Gemini.
 
 ### Arquitectura Técnica:
@@ -64,6 +69,7 @@ Este documento establece el plan técnico detallado para implementar las **3 car
 ---
 
 ## 📌 Cronograma Sugerido de Implementación
-1. **Paso 1:** Ciclo Día/Noche (requiere ajustes menores en shaders y PushConstants).
-2. **Paso 2:** Simulación de Vehículos (aprovecha la infraestructura existente de `traffic_system.c`).
-3. **Paso 3:** Monumentos con Gemini (requiere llamadas de red a la API de Gemini).
+1. **Paso 1:** Sistema de Peatones Urbanos (aprovecha la red vial y modelos existentes en `models/peds/`).
+2. **Paso 2:** Pipeline 2D con Alpha Blending y Font Atlas (optimiza el HUD y habilita cristales transparentes).
+3. **Paso 3:** Sombras Dinámicas Direccionales (Shadow Mapping).
+4. **Paso 4:** Integración en Runtime de Monumentos con Gemini.

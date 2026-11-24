@@ -9,6 +9,10 @@
 #define NUM_CARS 200
 #define NUM_CAR_TYPES 6
 
+#ifndef MAX_FRAMES_IN_FLIGHT
+#define MAX_FRAMES_IN_FLIGHT 2
+#endif
+
 typedef struct {
     uint32_t edge_idx;      // Índice de la arista actual
     float t;                // Parámetro [0.0, 1.0] sobre la arista
@@ -48,10 +52,16 @@ typedef struct {
     VkDeviceMemory vertexBufferMemory;
     size_t totalVertexCount;
     
-    // Buffer de instancias de coches en GPU (NUM_CARS instancias)
-    VkBuffer instanceBuffer;
-    VkDeviceMemory instanceBufferMemory;
-    CarInstanceData* mappedInstanceData;
+    // Buffer de instancias de coches en GPU (NUM_CARS instancias × MAX_FRAMES_IN_FLIGHT)
+    VkBuffer instanceBuffers[MAX_FRAMES_IN_FLIGHT];
+    VkDeviceMemory instanceBufferMemories[MAX_FRAMES_IN_FLIGHT];
+    CarInstanceData* mappedInstanceDatas[MAX_FRAMES_IN_FLIGHT];
+
+    // Buffer precalculado en CPU para desacoplar la preparación de instancias del renderpass
+    CarInstanceData stagedInstances[NUM_CARS];
+    uint32_t typeCounts[NUM_CAR_TYPES];
+    uint32_t typeOffsets[NUM_CAR_TYPES];
+    int instancesStaged;
 
     // Buffer dummy de una sola instancia con tint.a=0 para geometría estática
     // Cuando dibujamos el terreno en binding 1 apuntamos aquí
@@ -59,17 +69,20 @@ typedef struct {
     VkDeviceMemory staticDummyBufferMemory;
 } CarSystem;
 
-// Inicializa el sistema de coches
-int car_system_init(CarSystem* sys, VkDevice device, VkPhysicalDevice physDevice);
+// Inicializa el sistema de coches (sube mallas a VRAM DEVICE_LOCAL)
+int car_system_init(CarSystem* sys, VkDevice device, VkPhysicalDevice physDevice,
+                    VkCommandPool commandPool, VkQueue graphicsQueue);
+
+#include "traffic_system.h"
 
 // Libera los recursos del sistema de coches
 void car_system_free(CarSystem* sys, VkDevice device);
 
-// Actualiza simulación cinemática de los 200 coches
-void car_system_update(CarSystem* sys, const RoadGraph* graph, float dt, float cam_x, float cam_z);
+// Actualiza simulación cinemática de los 200 coches (con navegación e interacción con semáforos)
+void car_system_update(CarSystem* sys, const RoadGraph* graph, const TrafficSystem* traffic, float dt, float cam_x, float cam_z);
 
 // Dibuja instanciadamente los 200 coches (≈6 draw calls)
-void car_system_render(CarSystem* sys, VkCommandBuffer cmdBuffer);
+void car_system_render(CarSystem* sys, VkCommandBuffer cmdBuffer, uint32_t frameIdx);
 
 // Devuelve el buffer dummy para usar cuando se dibuja geometría estática (binding 1)
 VkBuffer car_system_get_static_dummy(const CarSystem* sys);
