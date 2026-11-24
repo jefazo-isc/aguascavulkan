@@ -6,15 +6,20 @@ import io
 import json
 import math
 import os
+import struct
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, os.path.join(ROOT, "tools", "metrics"))
 
+import classify_buildings
+import gltf_writer
+import procedural_props
 import topography_math
 import street_wiring
 import estimate_cocomo_fp
@@ -255,6 +260,92 @@ class TestStreetWiring(unittest.TestCase):
             self.assertIn(s["a"], pole_ids)
             self.assertIn(s["b"], pole_ids)
             self.assertGreaterEqual(int(s["cables"]), 1)
+
+
+class TestToolFixes(unittest.TestCase):
+    def test_export_glb_mesh_roundtrip(self):
+        verts = [
+            ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0), (1.0, 0.0, 0.0, 1.0), 0.0),
+            ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 0.0), (0.0, 1.0, 0.0, 1.0), 0.0),
+            ((0.0, 1.0, 0.0), (0.0, 1.0, 0.0), (0.0, 1.0), (0.0, 0.0, 1.0, 1.0), 0.5),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_glb = os.path.join(tmpdir, "nested", "tri.glb")
+            with contextlib.redirect_stdout(io.StringIO()):
+                exported = gltf_writer.export_glb_mesh(out_glb, verts)
+                empty_res = gltf_writer.export_glb_mesh(os.path.join(tmpdir, "empty.glb"), [])
+            self.assertEqual(exported, 3)
+            self.assertEqual(empty_res, 0)
+            with open(out_glb, "rb") as f:
+                raw = f.read()
+            magic, version, total_len = struct.unpack("<III", raw[:12])
+            self.assertEqual(magic, 0x46546C67)
+            self.assertEqual(version, 2)
+            self.assertEqual(total_len, len(raw))
+            json_len, json_type = struct.unpack("<II", raw[12:20])
+            self.assertEqual(json_type, 0x4E4F534A)
+            meta = json.loads(raw[20 : 20 + json_len].decode("utf-8"))
+            attrs = meta["meshes"][0]["primitives"][0]["attributes"]
+            for key in ("POSITION", "NORMAL", "TEXCOORD_0", "COLOR_0", "_EMISSION"):
+                self.assertIn(key, attrs)
+            bin_off = 20 + json_len
+            _, bin_type = struct.unpack("<II", raw[bin_off : bin_off + 8])
+            self.assertEqual(bin_type, 0x004E4942)
+
+    def test_classify_all_buildings_processes_every_polygon(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            models_dir = tmp_path / "models"
+            models_dir.mkdir()
+            features = []
+            for idx in range(3):
+                off = idx * 0.001
+                features.append({
+                    "type": "Feature",
+                    "properties": {"building:levels": 2 + idx},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [-102.296 + off, 21.880],
+                            [-102.2959 + off, 21.880],
+                            [-102.2959 + off, 21.8801],
+                            [-102.296 + off, 21.8801],
+                            [-102.296 + off, 21.880],
+                        ]],
+                    },
+                })
+            with open(models_dir / "overture_primer_anillo.geojson", "w", encoding="utf-8") as f:
+                json.dump({"type": "FeatureCollection", "features": features}, f)
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                with mock.patch.object(classify_buildings, "BASE_DIR", tmp_path), \
+                     mock.patch.object(classify_buildings, "load_osm_data", return_value=([], [])), \
+                     mock.patch.object(classify_buildings, "load_denue_data", return_value=[]):
+                    classify_buildings.classify_all_buildings()
+
+            out_path = models_dir / "classified_buildings.json"
+            self.assertTrue(out_path.is_file())
+            with open(out_path, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+            self.assertEqual(len(rows), 3)
+            self.assertEqual([r["id"] for r in rows], [0, 1, 2])
+
+    def test_make_traffic_signal_3d_planar_lenses(self):
+        angle = 0.7
+        verts, meta = procedural_props.make_traffic_signal_3d(1, 10, 0, 5.0, 1.0, -3.0, dir_angle=angle)
+        nx, ny, nz = math.cos(angle), 0.0, math.sin(angle)
+        for lens_name in ("red", "amber", "green"):
+            start = meta["lenses"][lens_name]["start"]
+            self.assertEqual(meta["lenses"][lens_name]["count"], 6)
+            q0 = verts[start + 0][0]
+            q1 = verts[start + 1][0]
+            q2 = verts[start + 2][0]
+            q3 = verts[start + 5][0]
+            for axis in range(3):
+                self.assertAlmostEqual(q3[axis] - q0[axis], q2[axis] - q1[axis], places=5)
+            for q in (q1, q2, q3):
+                dot_n = (q[0] - q0[0]) * nx + (q[1] - q0[1]) * ny + (q[2] - q0[2]) * nz
+                self.assertAlmostEqual(dot_n, 0.0, places=5)
 
 
 if __name__ == "__main__":
