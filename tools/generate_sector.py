@@ -211,6 +211,10 @@ def parse_args():
         help="Regenerar secuencialmente todos los macro-sectores con pasos a desnivel en subprocesos aislados (cero swap)"
     )
     parser.add_argument(
+        "--ring3-sectors", action="store_true",
+        help="Regenerar secuencialmente todos los macro-sectores del Tercer Anillo (Av. Siglo XXI) en subprocesos aislados (cero swap)"
+    )
+    parser.add_argument(
         "--rolcar-sectors", action="store_true",
         help="Regenerar secuencialmente todos los macro-sectores con sucursales Rolcar en subprocesos aislados (cero swap)"
     )
@@ -314,6 +318,49 @@ def _run_rolcar_sectors_isolated():
     print("[Batch Rolcar] Todos los macro-sectores con sucursales Rolcar regenerados sin swap.")
 
 
+def _run_ring3_sectors_isolated(macro_size: float):
+    """Regenera en subprocesos aislados todos los macro-sectores del Tercer Anillo (Av. Siglo XXI)."""
+    import subprocess, json
+    origin_lat, origin_lon = 21.8807, -102.2965
+    osm_xml = fetch_osm_data(-102.37, 21.80, -102.245, 21.95, cache_file="models/osm_tercer_anillo.xml")
+    _, _, highways, _, _, _, _, _, _, _, _ = parse_osm_data(osm_xml)
+    del osm_xml
+    gc.collect()
+
+    sectors = set()
+    for coords, tags, _ in highways:
+        name = tags.get("name", "").lower()
+        ref = tags.get("ref", "").lower()
+        if "siglo xxi" in name or "tercer anillo" in name or "siglo 21" in name or "siglo xxi" in ref:
+            for lat, lon in coords:
+                x, z = geo_to_meters(lat, lon, origin_lat, origin_lon)
+                sectors.add((int(x // macro_size), int(z // macro_size)))
+
+    manifest_path = "models/sectors.json"
+    if os.path.exists(manifest_path):
+        with open(manifest_path, "r") as mf:
+            existing = {(s["mx"], s["mz"]) for s in json.load(mf).get("sectors", [])}
+        sectors = sorted(sectors & existing)
+    else:
+        sectors = sorted(sectors)
+
+    print(f"[Batch Tercer Anillo] Regenerando {len(sectors)} macro-sectores del Tercer Anillo en subprocesos aislados...")
+    env = os.environ.copy()
+    env["MALLOC_ARENA_MAX"] = "2"
+    env["OMP_NUM_THREADS"] = "1"
+    for idx, (sx, sz) in enumerate(sectors, start=1):
+        avail = get_available_ram_mb()
+        while avail < 900:
+            print(f"[Anti-Freeze] RAM disponible baja ({avail} MB), esperando 2s...")
+            time.sleep(2.0)
+            avail = get_available_ram_mb()
+        print(f"\n[{idx}/{len(sectors)}] Subproceso aislado Tercer Anillo para sector ({sx}, {sz}) [RAM libre={avail} MB]...")
+        res = subprocess.run([sys.executable, os.path.abspath(__file__), "--sector", str(sx), str(sz)], env=env)
+        if res.returncode != 0:
+            print(f"[Batch Tercer Anillo] Advertencia: sector ({sx}, {sz}) salió con código {res.returncode}")
+    print("[Batch Tercer Anillo] Todos los macro-sectores de Tercer Anillo regenerados sin swap.")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Master Orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
@@ -324,6 +371,10 @@ def generate_sector():
     if args.tunnel_sectors:
         configure_anti_freeze(single_sector=True)
         _run_tunnel_sectors_isolated(args.sector_size)
+        return
+    if args.ring3_sectors:
+        configure_anti_freeze(single_sector=True)
+        _run_ring3_sectors_isolated(args.sector_size)
         return
     if args.rolcar_sectors:
         configure_anti_freeze(single_sector=True)
@@ -809,7 +860,9 @@ def generate_sector():
         export_traffic_signals_json(json_out, traffic_metadata)
     else:
         manifest_path = "models/sectors.json"
-        if os.path.exists(manifest_path) and os.path.exists(chunks_out):
+        # Seguridad Web: solo actualizar el manifiesto de producción si la salida es una ruta oficial en models/
+        is_production_output = glb_out.startswith("models/") or glb_out.startswith("./models/")
+        if is_production_output and os.path.exists(manifest_path) and os.path.exists(chunks_out):
             try:
                 import json
                 with open(manifest_path, "r") as mf:

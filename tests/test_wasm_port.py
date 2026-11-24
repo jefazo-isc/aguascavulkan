@@ -340,6 +340,20 @@ class TestWebClientAssets(unittest.TestCase):
         for target in ("wat:", "emcc:", "check-c:"):
             self.assertIn(target, mk)
 
+    def test_web_assets_autonomous_and_no_tmp(self):
+        """Verify that all core assets needed for 100% web standalone execution exist and have valid paths."""
+        manifest_path = os.path.join(ROOT, "models", "sectors.json")
+        self.assertTrue(os.path.isfile(manifest_path), "Missing models/sectors.json")
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        sector00 = next((s for s in manifest.get("sectors", []) if s.get("mx") == 0 and s.get("mz") == 0), None)
+        self.assertIsNotNone(sector00, "Sector (0,0) must exist in models/sectors.json")
+        self.assertFalse(sector00.get("file", "").startswith("/tmp/"), "Sector (0,0) file must not be a /tmp path")
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "models", "sectors", "sector_0_0.glb")), "Missing sector_0_0.glb")
+        self.assertTrue(os.path.isfile(os.path.join(WEB_DIR, "street_vulkan_core.wasm")), "Missing street_vulkan_core.wasm")
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "models", "road_network.bin")), "Missing road_network.bin")
+
     def test_js_module_syntax_in_node(self):
         node_bin = shutil.which("node")
         if not node_bin:

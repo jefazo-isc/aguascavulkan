@@ -246,6 +246,101 @@
     #toast-msg.visible {
       opacity: 1;
     }
+
+    /* Modal de Pausa / Testing Suite Web */
+    #pause-menu-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(8, 14, 26, 0.78);
+      backdrop-filter: blur(10px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+
+    #pause-menu-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .pause-dialog {
+      width: min(520px, 92vw);
+      background: rgba(14, 23, 42, 0.95);
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      border-radius: 12px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .pause-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #38bdf8;
+      border-bottom: 1px solid rgba(56, 189, 248, 0.2);
+      padding-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .pause-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .pause-btn {
+      padding: 10px 14px;
+      background: rgba(30, 41, 59, 0.85);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      border-radius: 6px;
+      color: #e2e8f0;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.15s ease;
+    }
+
+    .pause-btn:hover {
+      background: rgba(56, 189, 248, 0.2);
+      border-color: #38bdf8;
+      transform: translateY(-1px);
+    }
+
+    .pause-btn.primary {
+      grid-column: 1 / -1;
+      background: #0284c7;
+      border-color: #38bdf8;
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    .pause-btn.primary:hover {
+      background: #0369a1;
+    }
+
+    .pause-log {
+      max-height: 120px;
+      overflow-y: auto;
+      background: rgba(5, 10, 18, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 11px;
+      color: #94a3b8;
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
@@ -274,6 +369,10 @@
       <span id="hud-traffic">F0: N-S Verde</span>
     </div>
     <div class="hud-row">
+      <span class="hud-label">Autos Dinámicos:</span>
+      <span id="hud-cars" class="metric-good">50 activos</span>
+    </div>
+    <div class="hud-row">
       <span class="hud-label">FPS:</span>
       <span id="hud-fps" class="metric-good">--</span>
     </div>
@@ -296,6 +395,7 @@
   </aside>
 
   <div class="toolbar">
+    <button id="btn-pause" class="btn" title="Menú de Pausa & Testing [P / ESC]">Pausa [P]</button>
     <button id="btn-rolcar" class="btn" title="Volver a Rolcar Paseo de la Cruz [R]">Rolcar [R]</button>
     <button id="btn-time" class="btn" title="Cambiar hora del día [T]">Hora [T]</button>
     <button id="btn-freeze" class="btn" title="Congelar/reanudar avance solar [Y]">Pausa Sol [Y]</button>
@@ -304,7 +404,7 @@
   </div>
 
   <div class="controls-hint">
-    Clic/Arrastre: Mirar | WASD: Mover | Shift: Sprint 4x | Space/C: Subir/Bajar | Y: Sol | H: HUD
+    P / ESC: Menú de Pruebas | Clic/Arrastre: Mirar | WASD: Mover | Shift: Sprint 4x | Space/C: Subir/Bajar | Y: Sol | H: HUD
   </div>
 
   <div class="touch-pad" aria-label="Controles táctiles de cámara">
@@ -315,6 +415,28 @@
     <button id="btn-left" class="pad-btn" title="Izquierda">◀</button>
     <button id="btn-back" class="pad-btn" title="Atrás">▼</button>
     <button id="btn-right" class="pad-btn" title="Derecha">▶</button>
+  </div>
+
+  <!-- Modal de Pausa y Suite de Pruebas -->
+  <div id="pause-menu-overlay">
+    <div class="pause-dialog">
+      <div class="pause-title">
+        <span>StreetVulkan Web — Control & Testing</span>
+        <span style="font-size: 11px; color: #4ade80;">[PAUSADO]</span>
+      </div>
+      <div class="pause-grid">
+        <button id="pause-resume" class="pause-btn primary">▶ Continuar Simulación [ESC / P]</button>
+        <button id="pause-wasm-test" class="pause-btn">🧪 Test WASM Kernel</button>
+        <button id="pause-toggle-cars" class="pause-btn">🚗 Alternar Tráfico</button>
+        <button id="pause-toggle-time" class="pause-btn">☀️ Ciclo Horario</button>
+        <button id="pause-force-traffic" class="pause-btn">🚦 Forzar Fase Semáforo</button>
+        <button id="pause-toggle-cull" class="pause-btn">📦 Culling AABB</button>
+        <button id="pause-reset-cam" class="pause-btn">📍 Reset Cámara Rolcar</button>
+      </div>
+      <div id="pause-log-output" class="pause-log">
+        [Sistema] Simulación lista. Presione 'Test WASM Kernel' para validar las funciones matemáticas en memoria.
+      </div>
+    </div>
   </div>
 
   <div id="toast-msg"></div>

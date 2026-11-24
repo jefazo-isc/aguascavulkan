@@ -63,4 +63,17 @@ metrics:
 
 quality: clean all test asan-test metrics
 
-.PHONY: all clean debug test asan-test metrics quality
+web-build:
+	python3 tools/compile_wat_to_wasm.py
+	node --check web/app.js
+	node --check web/renderer_webgpu.js
+	node --check web/renderer_webgl2.js
+
+web-test: web-build
+	python3 -m unittest discover -s tests -v
+
+serve: web-build
+	@echo "Lanzando servidor StreetVulkan Web en http://localhost:8080/web/ ..."
+	python3 -m http.server 8080
+
+.PHONY: all clean debug test asan-test metrics quality web-build web-test serve

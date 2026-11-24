@@ -33,23 +33,85 @@ jobs:
       - name: Assemble GitHub Pages showcase bundle
         run: |
           rm -rf _site
-          mkdir -p _site/web _site/models/sectors
+          mkdir -p _site/web _site/models/sectors _site/models/cars _site/assets
           cp -r web/. _site/web/
           for f in \
             models/texture_atlas_16x16.png \
             models/traffic_signals.json \
             models/rolcar_aguascalientes.json \
-            models/utility_poles_rolcar.json; do
+            models/utility_poles_rolcar.json \
+            models/road_network.bin; do
             if [ -f "$f" ]; then cp "$f" _site/models/; fi
           done
-          for f in \
-            models/sectors/sector_0_0.glb \
-            models/sectors/chunks_0_0.json; do
-            if [ -f "$f" ]; then cp "$f" _site/models/sectors/; fi
-          done
-          if [ -f models/sectors.json ]; then
-            python3 -c 'import json; d = json.load(open("models/sectors.json", "r", encoding="utf-8")); s00 = [s for s in d.get("sectors", []) if s.get("mx") == 0 and s.get("mz") == 0]; out = {**d, "sector_count": len(s00), "total_verts": sum(int(s.get("vert_count", 0)) for s in s00), "sectors": s00}; json.dump(out, open("_site/models/sectors.json", "w", encoding="utf-8"), separators=(",", ":"))'
+          if [ -d models/cars ]; then
+            cp -r models/cars/. _site/models/cars/
           fi
+          for f in \
+            assets/texture_atlas_16x16.png \
+            assets/rolcar_anuncio.png \
+            assets/rolcar_fachada.png \
+            assets/rolcar_logo_banner.png \
+            assets/rolcar_logo_oval.png \
+            assets/rolcar_marquesina.png; do
+            if [ -f "$f" ]; then cp "$f" _site/assets/; fi
+          done
+          # Package sector_0_0.glb and generated key Tercer Anillo sectors strictly < 95 MB
+          python3 -c '
+import os, shutil, json, pathlib
+
+MAX_BYTES = 95 * 1024 * 1024
+site_sectors_dir = pathlib.Path("_site/models/sectors")
+site_sectors_dir.mkdir(parents=True, exist_ok=True)
+
+# Key Tercer Anillo corridor coords (underpasses, overpasses, and Av. Siglo XXI ring)
+KEY_TERCER_ANILLO_COORDS = {
+    (0, 0), (-5, 8), (-3, -5), (-3, -4), (-3, -3), (-3, -2), (-3, -1),
+    (-3, 0), (-3, 1), (-2, -5), (-2, -4), (-2, -3), (-2, -2), (-2, -1),
+    (-2, 0), (-1, -1), (-1, 0), (0, -8), (0, -7), (0, -6), (0, -5),
+    (0, -4), (0, -3), (0, -2), (0, -1), (1, -6), (1, -3), (1, -2),
+    (1, -1), (1, 0), (2, -3), (2, 0), (3, 0), (3, 1), (4, 0), (4, 1),
+    (-8, -5), (-8, -4), (-8, -3), (-8, -2), (-8, -1), (-8, 0), (-8, 1),
+    (-8, 2), (-7, -8), (-7, -7), (-7, -6), (-7, -5), (-7, 2), (-6, -8),
+    (-6, 2), (-6, 3), (-5, 3), (-4, 3), (-4, 4), (-3, -8), (-3, 4),
+    (-2, -8), (-2, 3), (-2, 4), (-1, -8), (-1, 3), (0, 3), (1, -7),
+    (1, 3), (2, -7), (2, -6), (2, 3), (3, -6), (3, -5), (3, -4),
+    (3, -3), (3, 2), (3, 3), (4, -3), (4, -2), (4, -1), (4, 2),
+    (5, 0), (5, 1)
+}
+
+# Package sector_0_0.glb and its chunks unconditionally if present
+for f in ("sector_0_0.glb", "chunks_0_0.json"):
+    p = pathlib.Path("models/sectors") / f
+    if p.is_file() and p.stat().st_size < MAX_BYTES:
+        shutil.copy2(p, site_sectors_dir / f)
+
+manifest_path = pathlib.Path("models/sectors.json")
+if manifest_path.is_file():
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    packaged = []
+    for s in manifest.get("sectors", []):
+        mx, mz = int(s.get("mx", 0)), int(s.get("mz", 0))
+        glb_file = pathlib.Path("models/sectors") / f"sector_{mx}_{mz}.glb"
+        chunk_file = pathlib.Path("models/sectors") / f"chunks_{mx}_{mz}.json"
+        is_key = (mx, mz) in KEY_TERCER_ANILLO_COORDS or (mx == 0 and mz == 0)
+        if is_key and glb_file.is_file() and glb_file.stat().st_size < MAX_BYTES:
+            shutil.copy2(glb_file, site_sectors_dir / glb_file.name)
+            if chunk_file.is_file():
+                shutil.copy2(chunk_file, site_sectors_dir / chunk_file.name)
+            packaged.append(s)
+
+    out_manifest = {
+        **manifest,
+        "sector_count": len(packaged),
+        "total_verts": sum(int(s.get("vert_count", 0)) for s in packaged),
+        "sectors": packaged
+    }
+    pathlib.Path("_site/models/sectors.json").write_text(
+        json.dumps(out_manifest, separators=(",", ":")),
+        encoding="utf-8"
+    )
+    print(f"[wasm-pages] Empaquetados {len(packaged)} sectores clave del Tercer Anillo (< 95 MB) en _site/models/sectors/")
+'
           if [ -f index.html ]; then
             cp index.html _site/index.html
           else
