@@ -91,7 +91,7 @@ $(TEST_ASAN_BIN): $(ASAN_OBJS) | $(ASAN_BUILDDIR)
 asan-test: $(TEST_ASAN_BIN)
 	./$(TEST_ASAN_BIN)
 
-metrics:
+metrics: $(SPV_VERT) $(SPV_FRAG)
 	python3 tools/metrics/evaluate_iso25040.py
 
 quality:
@@ -114,4 +114,4 @@ serve: web-build
 	@echo "Lanzando servidor StreetVulkan Web en http://localhost:8080/web/ ..."
 	python3 -m http.server 8080
 
-.PHONY: all web native clean debug test asan-test metrics quality web-build web-test serve
+.PHONY: all web legacy-native native clean debug test asan-test metrics quality web-build web-test serve

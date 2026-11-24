@@ -74,8 +74,10 @@ jobs:
           max-size: 500M
           create-symlink: true
 
-      - name: Build engine and shaders
-        run: make -j$(nproc)
+      - name: Build Web-First client and legacy shaders/engine
+        run: |
+          make -j$(nproc) web-build
+          make -j$(nproc) legacy-native
 
       - name: Run XP unit tests (C, ASan/UBSan & Python)
         run: |
