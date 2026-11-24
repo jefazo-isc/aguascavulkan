@@ -1051,6 +1051,210 @@ class TestGitHubShowcaseRepo(unittest.TestCase):
             if tmp_ctx is not None:
                 tmp_ctx.cleanup()
 
+    @staticmethod
+    def _extract_step_run_plain(raw: str, step_name: str) -> str:
+        lines = raw.splitlines()
+        for idx, line in enumerate(lines):
+            if line.strip() == f"- name: {step_name}":
+                j = idx + 1
+                while j < len(lines) and not lines[j].lstrip().startswith("run:"):
+                    j += 1
+                if j < len(lines) and lines[j].strip().startswith("run: |"):
+                    block_lines: list[str] = []
+                    base_indent: int | None = None
+                    for k in range(j + 1, len(lines)):
+                        cur = lines[k]
+                        if not cur.strip():
+                            block_lines.append("")
+                            continue
+                        indent = len(cur) - len(cur.lstrip(" "))
+                        if base_indent is None:
+                            base_indent = indent
+                        if indent < base_indent:
+                            break
+                        block_lines.append(cur[base_indent:])
+                    while block_lines and block_lines[-1] == "":
+                        block_lines.pop()
+                    return "\n".join(block_lines) + "\n"
+        raise AssertionError(f"Step '{step_name}' run block not found")
+
+    @classmethod
+    def _extract_step_run_script(cls, wf_path: str, step_name: str) -> str:
+        with open(wf_path, "r", encoding="utf-8") as f:
+            raw = f.read()
+        plain_script = cls._extract_step_run_plain(raw, step_name)
+        try:
+            import yaml  # type: ignore
+        except ImportError:
+            return plain_script
+        doc = yaml.safe_load(raw)
+        for job in doc.get("jobs", {}).values():
+            for step in job.get("steps", []):
+                if step.get("name") == step_name and "run" in step:
+                    assert step["run"] == plain_script, (
+                        f"Mismatch between YAML parser and plain extractor for '{step_name}'"
+                    )
+                    return step["run"]
+        raise AssertionError(f"Step '{step_name}' not found in parsed YAML {wf_path}")
+
+    def test_workflows_target_node24_actions_and_valid_shell(self):
+        deprecated_node20_actions = (
+            "actions/checkout@v4",
+            "actions/configure-pages@v5",
+            "actions/upload-pages-artifact@v3",
+            "actions/deploy-pages@v4",
+            "actions/setup-python@v5",
+            "actions/cache@v4",
+        )
+        for wf_name in ("wasm-pages.yml", "ci.yml"):
+            wf_path = os.path.join(ROOT, ".github", "workflows", wf_name)
+            self.assertTrue(os.path.isfile(wf_path), f"Missing workflow: {wf_path}")
+            with open(wf_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            for dep in deprecated_node20_actions:
+                self.assertNotIn(dep, content, f"Deprecated Node 20 action {dep} found in {wf_name}")
+
+        pages_wf = os.path.join(ROOT, ".github", "workflows", "wasm-pages.yml")
+        for step_name in ("Rebuild WebAssembly core from WAT", "Assemble GitHub Pages showcase bundle"):
+            script = self._extract_step_run_script(pages_wf, step_name)
+            proc = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+            self.assertEqual(proc.returncode, 0, f"bash -n failed for '{step_name}': {proc.stderr}")
+
+    def test_github_pages_bundle_assembly_execution_and_edge_cases(self):
+        pages_wf = os.path.join(ROOT, ".github", "workflows", "wasm-pages.yml")
+        rebuild_script = self._extract_step_run_script(pages_wf, "Rebuild WebAssembly core from WAT")
+        assemble_script = self._extract_step_run_script(pages_wf, "Assemble GitHub Pages showcase bundle")
+
+        # 1) Clean-checkout + boundary + malformed manifest + non-key sector scenario
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.makedirs(os.path.join(tmpdir, "tools"))
+            os.makedirs(os.path.join(tmpdir, "web"))
+            os.makedirs(os.path.join(tmpdir, "models", "sectors"))
+            os.makedirs(os.path.join(tmpdir, "models", "cars"))
+            os.makedirs(os.path.join(tmpdir, "assets"))
+
+            shutil.copy2(
+                os.path.join(ROOT, "tools", "compile_wat_to_wasm.py"),
+                os.path.join(tmpdir, "tools", "compile_wat_to_wasm.py"),
+            )
+            for fname in ("street_vulkan_core.wat", "index.html", "app.js"):
+                shutil.copy2(os.path.join(WEB_DIR, fname), os.path.join(tmpdir, "web", fname))
+            with open(os.path.join(tmpdir, "index.html"), "w", encoding="utf-8") as f:
+                f.write("<!DOCTYPE html><title>Root Redirect</title>")
+            with open(os.path.join(tmpdir, "models", "cars", "car_sedan.glb"), "wb") as f:
+                f.write(b"glTF\x02\x00\x00\x00")
+            with open(os.path.join(tmpdir, "assets", "rolcar_fachada.png"), "wb") as f:
+                f.write(b"\x89PNG\r\n\x1a\n")
+
+            # (0, 0): valid < 95 MiB
+            with open(os.path.join(tmpdir, "models", "sectors", "sector_0_0.glb"), "wb") as f:
+                f.write(b"glTF_0_0")
+            with open(os.path.join(tmpdir, "models", "sectors", "chunks_0_0.json"), "w", encoding="utf-8") as f:
+                json.dump({"chunks": [{"cx": 0, "cz": 0, "start": 0, "count": 6}]}, f)
+
+            # (-3, -2): key Tercer Anillo sector < 95 MiB (95 MiB - 1 byte sparse)
+            key_ok_glb = os.path.join(tmpdir, "models", "sectors", "sector_-3_-2.glb")
+            with open(key_ok_glb, "wb") as f:
+                f.truncate(MAX_GITHUB_FILE_BYTES - 1)
+
+            # (-8, -5): key Tercer Anillo sector exactly at 95 MiB boundary -> must be excluded (< MAX_BYTES)
+            key_oversized_glb = os.path.join(tmpdir, "models", "sectors", "sector_-8_-5.glb")
+            with open(key_oversized_glb, "wb") as f:
+                f.truncate(MAX_GITHUB_FILE_BYTES)
+
+            # (99, 99): non-key sector < 95 MiB -> must be excluded
+            with open(os.path.join(tmpdir, "models", "sectors", "sector_99_99.glb"), "wb") as f:
+                f.write(b"glTF_99_99")
+
+            manifest_in = {
+                "macro_size": 1024.0,
+                "chunk_size": 128.0,
+                "sector_count": 6,
+                "total_verts": 999999,
+                "sectors": [
+                    {"mx": 0, "mz": 0, "file": "models/sectors/sector_0_0.glb", "vert_count": 120},
+                    {"mx": 0, "mz": 0, "file": "models/sectors/sector_0_0.glb", "vert_count": 120},
+                    {"mx": -3, "mz": -2, "file": "models/sectors/sector_-3_-2.glb", "vert_count": 300},
+                    {"mx": -8, "mz": -5, "file": "models/sectors/sector_-8_-5.glb", "vert_count": 500},
+                    {"mx": 4, "mz": 0, "file": "models/sectors/sector_4_0.glb", "vert_count": 700},
+                    {"mx": 99, "mz": 99, "file": "models/sectors/sector_99_99.glb", "vert_count": 900},
+                    {},
+                    "malformed_entry",
+                ],
+            }
+            with open(os.path.join(tmpdir, "models", "sectors.json"), "w", encoding="utf-8") as f:
+                json.dump(manifest_in, f)
+
+            for step_script in (rebuild_script, assemble_script):
+                proc = subprocess.run(
+                    ["bash", "--noprofile", "--norc", "-eo", "pipefail"],
+                    input=step_script,
+                    cwd=tmpdir,
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(
+                    proc.returncode, 0, f"Workflow step failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+                )
+
+            out_manifest_path = os.path.join(tmpdir, "_site", "models", "sectors.json")
+            self.assertTrue(os.path.isfile(out_manifest_path))
+            with open(out_manifest_path, "r", encoding="utf-8") as f:
+                out_manifest = json.load(f)
+
+            self.assertEqual(out_manifest["sector_count"], 2)
+            self.assertEqual(out_manifest["total_verts"], 420)
+            self.assertEqual(
+                [(s["mx"], s["mz"]) for s in out_manifest["sectors"]],
+                [(0, 0), (-3, -2)],
+            )
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "_site", "models", "sectors", "sector_0_0.glb")))
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "_site", "models", "sectors", "chunks_0_0.json")))
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "_site", "models", "sectors", "sector_-3_-2.glb")))
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "_site", "models", "sectors", "sector_-8_-5.glb")))
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "_site", "models", "sectors", "sector_99_99.glb")))
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "_site", "web", "street_vulkan_core.wasm")))
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "_site", "models", "cars", "car_sedan.glb")))
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "_site", "assets", "rolcar_fachada.png")))
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "_site", ".nojekyll")))
+
+        # 2) Fallback layout: no models/sectors.json, no root index.html, no optional dirs
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.makedirs(os.path.join(tmpdir, "web"))
+            with open(os.path.join(tmpdir, "web", "index.html"), "w", encoding="utf-8") as f:
+                f.write("<!DOCTYPE html><title>Web Client</title>")
+
+            proc = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-eo", "pipefail"],
+                input=assemble_script,
+                cwd=tmpdir,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"Fallback bundle step failed:\n{proc.stderr}")
+            fallback_index = os.path.join(tmpdir, "_site", "index.html")
+            self.assertTrue(os.path.isfile(fallback_index))
+            with open(fallback_index, "r", encoding="utf-8") as f:
+                html = f.read()
+            self.assertIn("./web/index.html", html)
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "_site", "models", "sectors.json")))
+
+        # 3) Error path: oversized non-sector file in _site must fail the step with non-zero exit code
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.makedirs(os.path.join(tmpdir, "web"))
+            with open(os.path.join(tmpdir, "web", "huge.bin"), "wb") as f:
+                f.truncate(MAX_GITHUB_FILE_BYTES)
+
+            proc = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-eo", "pipefail"],
+                input=assemble_script,
+                cwd=tmpdir,
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("exceeds 95 MiB limit", proc.stderr)
+
 
 class TestTercerAnilloExpansion(unittest.TestCase):
     """Verifica que el terreno cubre todo Tercer Anillo (perímetro y área completa) sin costuras DEM,
