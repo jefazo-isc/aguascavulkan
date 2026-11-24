@@ -1258,7 +1258,31 @@ export class WebGL2Renderer {
             gl.bindVertexArray(sec.vao);
             totalVerts += sec.vertexCount;
 
-            if (sec.submeshes && sec.submeshes.length > 0) {
+            // Priority 1: Standard spatial chunk rendering with frustum culling
+            if (sec.chunks && sec.chunks.length > 0) {
+                gl.useProgram(this.program);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, sec.idxBuf);
+                totalChunks += sec.chunks.length;
+                const flags = frame.cullFlagsBySector ? frame.cullFlagsBySector.get(sectorKey) : null;
+                for (let i = 0; i < sec.chunks.length; i++) {
+                    if (!frame.cullingEnabled || !flags || flags[i] !== 0) {
+                        const chk = sec.chunks[i];
+                        gl.drawElements(
+                            gl.TRIANGLES,
+                            chk.count,
+                            sec.glIndexType,
+                            chk.start * sec.indexBytes
+                        );
+                        drawCalls++;
+                        visibleChunks++;
+                        visibleVerts += chk.count;
+                    }
+                }
+                continue;
+            }
+
+            // Priority 2: Submesh-based rendering (when model has separate submeshes and no spatial chunks)
+            if (sec.submeshes && sec.submeshes.length > 1) {
                 totalChunks += sec.submeshes.length;
                 for (const sub of sec.submeshes) {
                     const targetProg = (sub.isBuilding && this.buildingProgram) ? this.buildingProgram : this.program;
@@ -1275,33 +1299,17 @@ export class WebGL2Renderer {
                     visibleChunks++;
                     visibleVerts += sub.indexCount;
                 }
-            } else {
-                gl.useProgram(this.program);
-                const flags = frame.cullFlagsBySector ? frame.cullFlagsBySector.get(sectorKey) : null;
-                if (sec.chunks.length > 0) {
-                    totalChunks += sec.chunks.length;
-                    for (let i = 0; i < sec.chunks.length; i++) {
-                        if (!frame.cullingEnabled || !flags || flags[i] !== 0) {
-                            const chk = sec.chunks[i];
-                            gl.drawElements(
-                                gl.TRIANGLES,
-                                chk.count,
-                                sec.glIndexType,
-                                chk.start * sec.indexBytes
-                            );
-                            drawCalls++;
-                            visibleChunks++;
-                            visibleVerts += chk.count;
-                        }
-                    }
-                } else {
-                    totalChunks += 1;
-                    gl.drawElements(gl.TRIANGLES, sec.indexCount, sec.glIndexType, 0);
-                    drawCalls++;
-                    visibleChunks++;
-                    visibleVerts += sec.indexCount;
-                }
+                continue;
             }
+
+            // Priority 3: Monolithic single-draw fallback
+            totalChunks += 1;
+            gl.useProgram(this.program);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, sec.idxBuf);
+            gl.drawElements(gl.TRIANGLES, sec.indexCount, sec.glIndexType, 0);
+            drawCalls++;
+            visibleChunks++;
+            visibleVerts += sec.indexCount;
         }
 
         // Dynamic simulated vehicle rendering

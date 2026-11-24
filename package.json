@@ -1,0 +1,22 @@
+{
+  "name": "streetvulkan",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "StreetVulkan: Gemelo Digital Urbano 3D de Aguascalientes (WebGL2 & WebAssembly)",
+  "scripts": {
+    "build": "python3 tools/compile_wat_to_wasm.py && node --check web/app.js && node --check web/renderer_webgl2.js && node --check web/renderer_webgpu.js",
+    "test": "python3 -m unittest discover -s tests -v",
+    "serve": "python3 -m http.server 8080",
+    "start": "python3 -m http.server 8080"
+  },
+  "keywords": [
+    "webgl2",
+    "webassembly",
+    "gis",
+    "3d",
+    "streetvulkan",
+    "aguascalientes"
+  ],
+  "author": "Yahir",
+  "license": "MIT"
+}

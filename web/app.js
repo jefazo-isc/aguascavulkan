@@ -909,11 +909,12 @@ async function main() {
 
     // 2. Initialize GPU Renderer: WebGPU (Vulkan) primary with automatic WebGL2 fallback
     if (elLoaderText) elLoaderText.textContent = 'Inicializando adaptador GPU (WebGPU / WebGL2)...';
-    const queryBackend = new URLSearchParams(window.location.search).get('backend');
+    const queryBackend = (new URLSearchParams(window.location.search).get('backend') || '').toLowerCase();
     let renderer = null;
     let backendInfo = null;
 
-    if (queryBackend !== 'webgl2') {
+    const preferWebGL = (queryBackend === 'webgl' || queryBackend === 'webgl2');
+    if (!preferWebGL) {
         try {
             const wgpu = new WebGPURenderer();
             backendInfo = await wgpu.init(canvas);

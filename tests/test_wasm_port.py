@@ -840,10 +840,12 @@ const statsNorm = renderer.render({
 });
 
 const chunksOk = (
-    statsNorm.drawCalls === 2 &&
-    statsNorm.visibleVerts === 64000 &&
-    mockGl.draws[0].program === renderer.program &&
-    mockGl.draws[1].program === renderer.buildingProgram
+    statsNorm.visibleChunks === 20 &&
+    statsNorm.totalChunks === 64 &&
+    statsNorm.drawCalls === 20 &&
+    statsNorm.visibleVerts === 20000 &&
+    mockGl.draws.length === 20 &&
+    mockGl.draws.every(d => d.program === renderer.program)
 );
 
 // 3. renderMode: 'buildings'

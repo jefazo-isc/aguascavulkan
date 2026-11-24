@@ -21,11 +21,14 @@ SHADERS_FRAG = $(wildcard $(SHADERDIR)/*.frag)
 SPV_VERT = $(patsubst $(SHADERDIR)/%.vert, $(SHADERDIR)/%.spv, $(SHADERS_VERT))
 SPV_FRAG = $(patsubst $(SHADERDIR)/%.frag, $(SHADERDIR)/%.spv, $(SHADERS_FRAG))
 
-all: web-build native
-
-native: $(BUILDDIR) $(SPV_VERT) $(SPV_FRAG) $(TARGET)
+# Default target: Web-First WebGL2 / WebAssembly Client
+all: web-build
 
 web: web-build
+
+# Legacy C11 / Vulkan 1.2 Desktop Reference Targets (optional)
+legacy-native: $(BUILDDIR) $(SPV_VERT) $(SPV_FRAG) $(TARGET)
+native: legacy-native
 
 debug: CFLAGS += -DDEBUG -g -O0
 debug: all
