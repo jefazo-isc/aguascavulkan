@@ -115,7 +115,7 @@ flowchart TD
 
 ### Sprint 4 — Revisión y Retrospectiva (Calidad ISO SQuaRE, Prácticas XP y Correcciones Tier S)
 - **Incremento Demostrado:**
-  - Suite completa de pruebas unitarias C (`test_c_modules.c`: `12` funciones / `148` aserciones) + ASan/UBSan (`make asan-test`) + pruebas Python (`test_python_tools.py`: `12` pruebas `unittest`).
+  - Suite de pruebas C (`test_c_modules.c`: actualmente `15` funciones de prueba) + ASan/UBSan (`make asan-test`) + pruebas Python (`test_python_tools.py`: actualmente `18` métodos `unittest`). `make test` descubre también las pruebas adicionales disponibles bajo `tests/`; el conteo puede cambiar cuando se agreguen casos.
   - **Corrección Tier S #1 (Topografía DEM):** Unificación del datum `1865.0 m` $\to$ `1871.0 m` y reemplazo de la grilla `40x40` por `64x64` (`dem_terrarium_21.800_21.950_-102.370_-102.245_64x64.json`) con 4 ríos y 2 fallas geológicas en [terrain_dem_data.h](../include/terrain_dem_data.h) e importadores de fotografía (`max_diff = 0.000018 m` en `Q-FNC-02`, `3.03e-05 m` en grilla 50×50).
   - **Corrección Tier S #2 (Textura Satelital y UBO):** Eliminación de retorno prematuro sin descriptores cuando faltan PNGs satelitales mediante textura fallback `4x4`, validación de dimensiones en `load_quadrant_satellite()`, chequeo de soporte físico de `samplerAnisotropy` y capacidades de blit en [vulkan_texture.c](../src/vulkan_texture.c).
   - **Corrección Tier S #3 (Transparencia de Métricas):** Eliminación de scorecards inflados al 100% artificial; implementación de estado `WARN` honesto en [evaluate_iso25040.py](../tools/metrics/evaluate_iso25040.py) (`4 PASS, 1 WARN, 0 FAIL`) y [measure_maintainability.py](../tools/metrics/measure_maintainability.py).

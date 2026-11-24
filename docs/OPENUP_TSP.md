@@ -109,7 +109,7 @@ flowchart TD
     end
 
     subgraph QA["Aseguramiento de Calidad y Metricas (tests/ y tools/metrics/)"]
-        TESTS["test_c_modules.c (148 aserciones) + test_python_tools.py + ASan/UBSan"]
+        TESTS["Harness C + pruebas unittest Python/WASM + ASan/UBSan"]
         MET["evaluate_iso25040.py -> estimate_cocomo_fp, validate_data_quality, measure_iso25023, measure_maintainability"]
     end
 
@@ -205,7 +205,7 @@ De acuerdo con la Unidad 03 (Slides 34, 35 y 63), las métricas del proyecto se 
 | **4. Codificación** | 120.0 | 132.0 | 47.1% | Implementación C11/Vulkan, shaders GLSL y pipeline Python (`19,533` SLOC). |
 | **5. Revisión de Código** | 14.0 | 16.0 | 5.7% | Auditoría estática (`-Wall -Wextra`, `measure_maintainability.py`, revisión de cuadrantes). |
 | **6. Compilación** | 8.0 | 9.0 | 3.2% | Compilación de 15 módulos C + shaders SPIR-V y corrección de warnings. |
-| **7. Pruebas (*Unit + ASan + QA*)** | 32.0 | 37.0 | 13.2% | `test_c_modules.c` (`12` funciones / `148` aserciones), `test_python_tools.py` (`12` unittest), `make asan-test`, `make metrics` (`4 PASS, 1 WARN, 0 FAIL`). |
+| **7. Pruebas (*Unit + ASan + QA*)** | 32.0 | 37.0 | 13.2% | El harness C contiene actualmente `15` funciones de prueba; `test_python_tools.py` contiene `18` métodos `unittest`. Ejecutar `make test`, `make asan-test` y `make metrics`; los resultados y advertencias dependen de la versión y el entorno de ejecución. |
 | **8. Postmortem** | 8.0 | 10.0 | 3.6% | Análisis de causas raíz Tier S, registro de deuda Tier B (`16` funcs `CC > 20`) y cierre. |
 | **TOTAL** | **248.0** | **280.0** | **100.0%** | **Productividad N&C:** $17,807 / 280.0 = 63.60\text{ SLOC/h}$ \| **Total:** $69.76\text{ SLOC/h}$ |
 

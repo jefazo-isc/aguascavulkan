@@ -4,28 +4,15 @@ Este documento establece el plan técnico detallado para implementar las caracte
 
 ---
 
-## 🚶 1. Simulación Dinámica de Peatones Urbanos en C
-**Objetivo:** Introducir peatones animados que caminen por las banquetas y aceras de la ciudad y crucen en los pasos de cebra respetando las fases de los semáforos.
+## 🚶 1. Integración Visual de Peatones en GPU
+**Objetivo:** Conectar al renderizado los peatones cuya lógica de movimiento y estados semafóricos ya existen en C, y mostrarlos caminando por banquetas y cruces.
 
 ### Arquitectura Técnica:
-1. **Estructuras de Datos (`include/ped_system.h` & `src/ped_system.c`):**
-   ```c
-   typedef enum { PED_WALKING, PED_WAITING_RED, PED_CROSSING } PedestrianState;
-
-   typedef struct {
-       float pos[3];
-       float heading;
-       float speed;
-       uint32_t current_sidewalk_idx;
-       PedestrianState state;
-       float tint[4];
-   } Pedestrian;
-   ```
-2. **Lógica de Navegación:**
-   - Los peatones se desplazan sobre la malla de banquetas y cruzan por las marcas de cebra cuando el semáforo vehicular está en rojo.
-3. **Malla 3D e Instancing GPU:**
+1. **Lógica existente:** [ped_system.h](../include/ped_system.h) y [ped_system.c](../src/ped_system.c) definen los estados y la actualización CPU; conservar las pruebas unitarias al integrarlos.
+2. **Malla 3D e instancing GPU:**
    - Carga del modelo low-poly `models/peds/ped.glb`.
    - Renderizado instanciado masivo en GPU con buffer dinámico mapeado por frame en vuelo (`MAX_FRAMES_IN_FLIGHT = 2`).
+3. **Integración y validación:** actualizar la escena/bucle de render y comprobar sincronización con semáforos, límites del buffer y comportamiento al no haber modelos disponibles.
 
 ---
 
@@ -54,14 +41,13 @@ Este documento establece el plan técnico detallado para implementar las caracte
 
 ---
 
-## 🏛️ 4. Generación de Monumentos Únicos con la API de Gemini
-**Objetivo:** Sustituir edificios históricos o icónicos por modelos 3D detallados generados automáticamente por la API de Gemini.
+## 🏛️ 4. Integración en Runtime de Monumentos Generados
+**Objetivo:** Integrar en el runtime Vulkan los modelos OBJ que ya puede producir el pipeline de Gemini para sustituir edificios históricos o icónicos seleccionados.
 
 ### Arquitectura Técnica:
 1. **Detección Semántica (`tools/classify_buildings.py`):**
    - Filtrar en el mapa los edificios marcados con etiquetas especiales de OSM/DENUE (`historic=monument`, `amenity=place_of_worship`, `tourism=attraction`).
-2. **Generador con IA Gemini (`tools/gemini_obj_generator.py`):**
-   - Enviar el contexto geométrico (polígono de base, altura real y foto satelital) al modelo de Gemini para estructurar las caras y vértices del monumento en formato `.obj`.
+2. **Generación existente:** [gemini_obj_generator.py](../tools/gemini_obj_generator.py) y las herramientas relacionadas producen modelos OBJ; documentar y validar entradas, salidas y credenciales antes de ejecutar el servicio externo.
 3. **Carga en Tiempo de Ejecución en Vulkan (`src/vulkan.c` & `src/obj_loader.c`):**
    - Cargar dinámicamente los archivos `.obj` generados desde `models/gemini_cache/`.
    - Ajuste de cota topográfica (`vulkan_get_ground_elevation`) para asentar la base del monumento perfectamente sobre el terreno.
@@ -69,7 +55,7 @@ Este documento establece el plan técnico detallado para implementar las caracte
 ---
 
 ## 📌 Cronograma Sugerido de Implementación
-1. **Paso 1:** Sistema de Peatones Urbanos (aprovecha la red vial y modelos existentes en `models/peds/`).
+1. **Paso 1:** Integración visual de peatones en GPU (aprovecha la lógica CPU y los modelos existentes en `models/peds/`).
 2. **Paso 2:** Pipeline 2D con Alpha Blending y Font Atlas (optimiza el HUD y habilita cristales transparentes).
 3. **Paso 3:** Sombras Dinámicas Direccionales (Shadow Mapping).
-4. **Paso 4:** Integración en Runtime de Monumentos con Gemini.
+4. **Paso 4:** Integración en runtime de monumentos generados con Gemini.

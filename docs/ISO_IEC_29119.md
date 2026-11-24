@@ -6,10 +6,10 @@
 ## 2. Niveles y Tipos de Prueba
 | Nivel | Alcance | Implementación | Criterio de Aceptación |
 |---|---|---|---|
-| **Pruebas Unitarias C** | Tráfico, grafo vial (`RGP1`), carga OBJ, peatones, pool VRAM, vehículos, sectores, glTF | [test_c_modules.c](file:///home/yahir/vulkan/tests/test_c_modules.c) | 0 fallos en `make test` |
-| **Análisis Dinámico de Memoria** | Detección de leaks, out-of-bounds y UB | Target `asan-test` en [Makefile](file:///home/yahir/vulkan/Makefile) | Exit code 0 bajo ASan + UBSan |
-| **Pruebas Unitarias Python** | Topografía 2D, IFPUG, COSMIC, COCOMO-II, mantenibilidad, auditores ISO | [test_python_tools.py](file:///home/yahir/vulkan/tests/test_python_tools.py) | 100% `OK` en `unittest` |
-| **Calidad de Datos** | Integridad de sectores `.glb`, `road_network.bin`, `chunks.json`, DEMs y DENUE | [validate_data_quality.py](file:///home/yahir/vulkan/tools/metrics/validate_data_quality.py) | 100% `[PASS]` |
+| **Pruebas Unitarias C** | Tráfico, grafo vial (`RGP1`), carga OBJ, peatones, pool VRAM, vehículos, sectores, glTF | [test_c_modules.c](../tests/test_c_modules.c) | 0 fallos en `make test` |
+| **Análisis Dinámico de Memoria** | Detección de errores de memoria y comportamiento indefinido | Target `asan-test` en [Makefile](../Makefile) | Exit code 0 bajo ASan + UBSan |
+| **Pruebas Unitarias Python** | Topografía 2D, IFPUG, COSMIC, COCOMO-II, mantenibilidad, auditores ISO | [test_python_tools.py](../tests/test_python_tools.py) | Sin fallos en la ejecución de `unittest` |
+| **Calidad de Datos** | Integridad de sectores `.glb`, `road_network.bin`, `chunks.json`, DEMs y DENUE | [validate_data_quality.py](../tools/metrics/validate_data_quality.py) | Resultado según reporte; revisar advertencias y errores |
 
 ## 3. Técnicas de Diseño de Pruebas (ISO/IEC/IEEE 29119-4)
 - **Partición de equivalencia y valores límite**: Probados en triangulación degenerada, punteros nulos en `road_graph_load`, límites de capacidad en `ped_system_spawn` y clasificación de códigos de salida (`0=PASS`, `2=WARN`, `1=FAIL`) en `evaluate_iso25040.py`.
@@ -17,5 +17,5 @@
 
 ## 4. Entorno y Automatización (CI)
 - La ejecución local se centraliza mediante `make test`, `make asan-test` y `make quality`.
-- La integración continua en [.github/workflows/ci.yml](file:///home/yahir/vulkan/.github/workflows/ci.yml) ejecuta compilación, pruebas C/Python, sanitizadores y los auditores ISO en cada `push` y `pull_request` sobre `main`.
-- El cumplimiento estructural se verifica mediante [audit_iso29119.py](file:///home/yahir/vulkan/tools/metrics/audit_iso29119.py).
+- La integración continua en [ci.yml](../.github/workflows/ci.yml) ejecuta compilación, pruebas C/Python, sanitizadores y verificaciones automatizadas en cada `push` y `pull_request` sobre `main`.
+- La presencia y estructura de la infraestructura de pruebas se revisa mediante [audit_iso29119.py](../tools/metrics/audit_iso29119.py); esta auditoría no demuestra por sí sola conformidad formal con la norma.

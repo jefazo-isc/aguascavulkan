@@ -9,7 +9,7 @@
 
 ## 🧭 1. Resumen Ejecutivo (El "Elevator Pitch")
 
-> *"StreetVulkan es un gemelo digital 3D de la ciudad de Aguascalientes de ultra-alto rendimiento. En vez de utilizar motores de videojuegos comerciales pesados (Unity o Unreal Engine), el motor gráfico fue programado desde cero en **C11 nativo con Vulkan API 1.2**. Además, el núcleo matemático (cámara, proyección, matrices 4x4, frustum culling y lógica de semáforos) fue codificado en **Ensamblador puro para WebAssembly (`.wat`)**, permitiendo que cualquier persona lo ejecute en su navegador web a 60 FPS mediante **WebGPU (Vulkan en la Web)** sin instalar nada."*
+> *"StreetVulkan es un proyecto de visualización urbana 3D de Aguascalientes. El motor nativo está escrito en **C11 con Vulkan API 1.2**. Además, un kernel matemático para cámara, proyección, frustum culling y lógica de semáforos está escrito en **WebAssembly Text (`.wat`)** y se ejecuta en el navegador junto con los renderizadores **WebGPU o WebGL2**. El objetivo de rendimiento debe comprobarse en el equipo de demostración; WebGPU es una API web, no Vulkan."*
 
 ---
 
@@ -24,10 +24,10 @@
 | **Infraestructura CFE** | **1,215 postes / 1,180 cables** | Postes geolocalizados y cables generados con curvas catenarias físicas procedimentales. |
 | **Semáforos Inteligentes** | **552** | Controladores con lógica de ciclos semafóricos sincronizados con la red vial. |
 | **Tráfico en Tiempo Real** | **200 vehículos** | Simulación cinemática instanciada por GPU siguiendo grafos viales reales. |
-| **Topografía Real** | **DEM 30 metros** | Corrección de elevación topográfica a partir de mallas de satélite/LiDAR. |
+| **Topografía** | **DEM satelital Terrarium/SRTM** | Datos de elevación DEM procesados; no se afirma que el proyecto use una malla LiDAR. |
 | **Macro-Sectores** | **401 sectores** | Celdas modulares con límites `< 99 MB` para carga dinámica y compatibilidad con GitHub. |
-| **Pruebas Automatizadas** | **841 pruebas (0 fallos)** | 815 en C11 + 26 en Python/WASM con AddressSanitizer y UBSan activos. |
-| **Normas ISO Cumplidas** | **8 estándares** | ISO/IEC 25010, 25023, 25012, 25024, 27001, 27034, 29119, 9001/31000. |
+| **Pruebas Automatizadas** | **Suites C, Python y WASM** | `make test` ejecuta el harness C y el descubrimiento `unittest`; `make asan-test` instrumenta el harness C. Revisar la salida del entorno antes de reportar resultados. |
+| **Calidad y proceso** | **Auditorías y documentos internos** | Hay verificaciones relacionadas con modelos ISO/IEC y metodologías; no equivalen a certificación ni prueban conformidad formal. |
 
 ---
 
@@ -58,7 +58,7 @@ Si les piden explicar cómo funciona el sistema, divídanlo en 4 capas:
                                     │
 ┌───────────────────────────────────┴───────────────────────────────────┐
 │ 4. INGENIERÍA DE SOFTWARE & DEVOPS (CI/CD + SQuaRE)                   │
-│ • 841 Pruebas Unitarias + Sanitizadores (ASan / UBSan)                │
+│ • Pruebas C/Python/WASM + Sanitizadores (ASan / UBSan)                │
 │ • GitHub Actions: Workflows de compilación, pruebas y despliegue      │
 │ • Métricas de software: COCOMO-II, IFPUG, COSMIC CFP                  │
 └───────────────────────────────────────────────────────────────────────┘
@@ -90,9 +90,9 @@ Si les piden explicar cómo funciona el sistema, divídanlo en 4 capas:
 
 ### Diapositiva 3: Arquitectura Gráfica C11 / Vulkan & WASM (1.5 minutos)
 - **Ponente 3**:  
-  *"En la parte de ingeniería de bajo nivel, el proyecto cuenta con dos motores:  
-  1. **Motor Nativo**: Desarrollado en **C11 puro y Vulkan 1.2**, con iluminación basada en física (PBR), shaders GLSL SPIR-V y memoria optimizada con *memory pooling*.  
-  2. **Cliente Web Universal**: Trasladamos el núcleo matemático a **Ensamblador WebAssembly (`.wat`)** ensamblado sin librerías externas, y lo conectamos a **WebGPU** con shaders WGSL para correr a 60 cuadros por segundo en cualquier navegador."*
+  *"En la parte de ingeniería de bajo nivel, el proyecto cuenta con dos rutas de renderizado:
+  1. **Motor Nativo**: Desarrollado en **C11 puro y Vulkan 1.2**, con iluminación basada en física (PBR), shaders GLSL SPIR-V y memoria optimizada con *memory pooling*.
+  2. **Cliente Web**: El kernel matemático está escrito en **WebAssembly Text (`.wat`)** y el renderizado usa **WebGPU** con shaders WGSL o WebGL2 como alternativa. Los 60 FPS son un objetivo que debe medirse en el dispositivo y navegador usados para la demostración."*
 
 ### Diapositiva 4: Demostración en Vivo (1.5 minutos)
 - **Ponente 1 o 2 (Compartir pantalla o proyector)**:  
@@ -101,10 +101,9 @@ Si les piden explicar cómo funciona el sistema, divídanlo en 4 capas:
 
 ### Diapositiva 5: Calidad de Software, Metodologías y Conclusión (1 minuto)
 - **Ponente 3**:  
-  *"Finalmente, el desarrollo no fue improvisado. Cumplimos con un marco riguroso de ingeniería de software:  
-  - Metodologías **OpenUP/TSP** y **Scrum/XP**.  
-  - Batería de **841 pruebas automatizadas** que corren en cada commit mediante GitHub Actions.  
-  - Auditoría de calidad bajo la familia **ISO/IEC 25000 (SQuaRE)**, seguridad ISO 27001 y pruebas ISO 29119.  
+  *"Finalmente, el desarrollo se apoya en prácticas iterativas inspiradas en **Scrum**, prácticas de ingeniería de **XP** y principios de arquitectura de **OpenUP**; los documentos TSP/PSP registran análisis y estimaciones del proyecto.
+  - El repositorio incluye pruebas C, Python y WASM; CI las ejecuta según lo definido en los workflows, no necesariamente en cada commit local.
+  - Hay auditorías internas y documentación relacionadas con SQuaRE, seguridad y pruebas. No presentamos estos artefactos como certificación ISO ni como conformidad formal.
   El código está abierto y disponible en nuestro repositorio de GitHub. Muchas gracias, quedamos abiertos a sus preguntas."*
 
 ---
@@ -114,8 +113,8 @@ Si les piden explicar cómo funciona el sistema, divídanlo en 4 capas:
 1. **Pregunta:** *¿Por qué no usaron Three.js o Unity?*  
    - **Respuesta:** *«El objetivo pedagógico y de ingeniería era dominar las capas fundamentales de la computación gráfica. Usar un motor comercial oculta la gestión de buffers de GPU, la sincronización de comandos y el cálculo matricial. Al implementarlo en C11/Vulkan y WebAssembly/WebGPU, logramos un entendimiento profundo del hardware y un rendimiento determinístico con una huella de memoria mínima.»*
 
-2. **Pregunta:** *¿Cómo garantizan que la aplicación no tenga fugas de memoria (memory leaks)?*  
-   - **Respuesta:** *«Implementamos sanitizadores de memoria en tiempo de compilación con GCC: AddressSanitizer (ASan) y UndefinedBehaviorSanitizer (UBSan). Además, contamos con una compuerta automatizada (`make asan-test`) que valida todas las reservas dinámicas y garantiza cero memory leaks en cada ejecución.»*
+2. **Pregunta:** *¿Cómo verifican posibles errores de memoria?*
+  - **Respuesta:** *«El harness C puede ejecutarse con AddressSanitizer y UndefinedBehaviorSanitizer mediante `make asan-test`. Esto ayuda a detectar ciertos errores durante las rutas ejecutadas, pero no prueba todas las rutas ni garantiza ausencia total de defectos; la validación interactiva de Vulkan también depende del entorno gráfico y del driver.»*
 
 3. **Pregunta:** *¿Cómo resolvieron el límite de 100 MB por archivo de GitHub al subir los modelos 3D?*  
    - **Respuesta:** *«Diseñamos un algoritmo de particionamiento espacial en celdas o macro-sectores (`split_glb_to_sectors.py`). Cada sector de la ciudad se exporta como un archivo glTF/GLB independiente de menos de 70 MB, permitiendo el streaming modular y cumpliendo con las políticas de GitHub sin requerir almacenamiento externo.»*
@@ -160,11 +159,11 @@ Si están en la computadora del laboratorio o laptop del equipo:
 Si tus compañeros quieren generar el terreno por su cuenta en su propia máquina:
 
 1. **Todo el código fuente y cachés DEM satelitales ya están subidos al repositorio:**
-   - [tools/generate_sector.py](file:///home/yahir/vulkan/tools/generate_sector.py) (generador procedural principal).
-   - [tools/geo_dem.py](file:///home/yahir/vulkan/tools/geo_dem.py) (corrección topográfica).
-   - [models/dem_terrarium_*.json](file:///home/yahir/vulkan/models/) (cachés de elevación DEM 30m de Aguascalientes).
-   - [models/sectors/sector_0_0.glb](file:///home/yahir/vulkan/models/sectors/sector_0_0.glb) y [models/sectors/chunks_0_0.json](file:///home/yahir/vulkan/models/sectors/chunks_0_0.json) (sector base precargado).
-   - [models/road_network.bin](file:///home/yahir/vulkan/models/road_network.bin) y catálogos JSON de Rolcar, CFE y semáforos.
+  - [tools/generate_sector.py](../tools/generate_sector.py) (generador procedural principal).
+  - [tools/geo_dem.py](../tools/geo_dem.py) (corrección topográfica).
+  - [modelos DEM](../models/) (cachés de elevación de Aguascalientes).
+  - [sector_0_0.glb](../models/sectors/sector_0_0.glb) (sector base precargado).
+  - [models/road_network.bin](../models/road_network.bin) y catálogos JSON de Rolcar, CFE y semáforos.
 
 2. **Generación Inmediata del Sector Base:**
    Al clonar el repo, pueden ejecutar directamente:
