@@ -1,5 +1,8 @@
 # 🏙️ StreetVulkan: Gemelo Digital Urbano 3D de Aguascalientes
 
+[![CI](https://github.com/jefazo-isc/aguascavulkan/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jefazo-isc/aguascavulkan/actions/workflows/ci.yml)
+[![Pages](https://github.com/jefazo-isc/aguascavulkan/actions/workflows/wasm-pages.yml/badge.svg)](https://github.com/jefazo-isc/aguascavulkan/actions/workflows/wasm-pages.yml)
+
 > **Arquitectura Web-First impulsada por WebGL2, WebGPU y WebAssembly (`.wat` $\to$ `.wasm`)**, con motor nativo de referencia en C11 / Vulkan 1.2 + SDL2 y pipeline geoespacial procedural.
 >
 > 🌐 **Demo en Vivo (GitHub Pages):** [https://jefazo-isc.github.io/aguascavulkan/](https://jefazo-isc.github.io/aguascavulkan/)  
@@ -161,10 +164,28 @@ El proyecto cuenta con un riguroso esquema de aseguramiento de calidad con integ
 | `make asan-test` | Sanitizadores de memoria dinámica | Valida que no existan memory leaks, buffer overflows ni comportamientos indefinidos (AddressSanitizer + UBSan). |
 | `make metrics` | Auditoría SQuaRE / Métricas de Software | Evalúa métricas ISO 25010, 25023, 25012, 27001, 29119, estimaciones COCOMO-II y puntos de función COSMIC/IFPUG. |
 | `make quality` | Pipeline completo de calidad local | Ejecuta limpieza, build, pruebas unitarias, sanitizadores y generación del reporte de calidad. |
+| `make e2e` | Prueba E2E del cliente web | Sirve el repo, abre Chrome headless (WebGL2 por SwiftShader, sin GPU) y verifica sector 0,0, mapa base, tráfico y teleports; deja capturas y `report.json` en `e2e-artifacts/`. Requiere Node ≥ 22 (o `node --experimental-websocket` en Node 20). |
 
-Los flujos de GitHub Actions se ejecutan en cada push y pull request:
-- ✅ **StreetVulkan CI (DevOps & Quality Gate)**: Ejecuta build en GCC, pruebas C/Python, sanitizadores, reproducibilidad del artefacto WAT→WASM y verificaciones automatizadas de calidad.
-- ✅ **StreetVulkan WASM & WebGPU Pages**: Empaqueta el cliente WebAssembly, valida la sintaxis y publica a GitHub Pages.
+### Pipeline CI/CD
+
+```text
+push / pull request a main
+        │
+        ▼
+┌──────────────────────────── CI: StreetVulkan CI (DevOps & Quality Gate) ───────────────────────────┐
+│ build-and-test: build web + nativo, pruebas C/Python, ASan/UBSan, WAT→WASM reproducible, ISO   │
+│        │                                                                                          │
+│        ▼                                                                                          │
+│ e2e-smoke: Chrome headless + WebGL2 → sector 0,0 sin escena de respaldo, mapa base, tráfico,      │
+│            teleports Primer/Tercer Anillo → artefacto con capturas + report.json                 │
+└───────────────────────────────────────────────────────────────────────────────────────────────────┘
+        │ solo si CI terminó en verde (workflow_run, conclusion == success)
+        ▼
+CD: StreetVulkan WASM & WebGPU Pages → empaqueta el bundle web del mismo commit y despliega a GitHub Pages
+```
+
+- ✅ **StreetVulkan CI (DevOps & Quality Gate)**: corre en cada push y pull request; el job `e2e-smoke` depende de `build-and-test` y publica las capturas como artefacto descargable en la pestaña *Actions*.
+- 🚀 **StreetVulkan WASM & WebGPU Pages**: despliegue continuo; se dispara al terminar el CI de `main` y solo publica commits con CI exitoso (también puede lanzarse a mano con *Run workflow*).
 
 ---
 
