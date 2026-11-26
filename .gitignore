@@ -1,5 +1,6 @@
 # Binarios y compilados
 street_vulkan
+test_ped.glb
 build/
 *.o
 *.so
