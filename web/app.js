@@ -44,11 +44,12 @@ const TIME_PRESETS = [
     { hour: 6.5, label: '06:30 Amanecer' },
 ];
 
+// Signal group 0 controls roads running along X (East-West), group 1 along Z (tools/sector_roads.py)
 const TRAFFIC_PHASE_LABELS = [
-    'F0: N-S Verde',
-    'F1: N-S Ámbar',
-    'F2: E-O Verde',
-    'F3: E-O Ámbar',
+    'F0: E-O Verde',
+    'F1: E-O Ámbar',
+    'F2: N-S Verde',
+    'F3: N-S Ámbar',
 ];
 
 function degToRad(d) {
@@ -1746,9 +1747,9 @@ async function main() {
                 const dz = sig.z - camZ;
                 if (dx * dx + dz * dz > 450 * 450) continue;
 
-                const isNS = (sig.phase || 0) === 0;
+                const isGroup0 = (sig.phase || 0) === 0;
                 let r = 1.0, g = 0.04, b = 0.04;
-                if (isNS) {
+                if (isGroup0) {
                     if (state.trafficPhase === 0) { r = 0.0; g = 1.0; b = 0.35; }
                     else if (state.trafficPhase === 1) { r = 1.0; g = 0.65; b = 0.0; }
                 } else {
