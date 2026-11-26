@@ -50,7 +50,7 @@ $(TARGET): $(OBJECTS)
 
 TEST_BIN = $(BUILDDIR)/test_c_modules
 TEST_ASAN_BIN = $(BUILDDIR)/test_c_modules_asan
-TEST_MODULES = logger traffic_system road_graph obj_loader ped_system vulkan_memory_pool car_system sector_system vulkan_gltf vulkan_swapchain vulkan_pipeline
+TEST_MODULES = logger traffic_system road_graph obj_loader ped_system vulkan_memory_pool car_system sector_system vulkan_gltf vulkan_swapchain vulkan_pipeline lighting_system
 TEST_SRCS = tests/test_c_modules.c $(patsubst %, $(SRCDIR)/%.c, $(TEST_MODULES))
 TEST_OBJS = $(BUILDDIR)/test_c_modules.o $(patsubst %, $(BUILDDIR)/%.o, $(TEST_MODULES))
 TEST_DEPS = $(BUILDDIR)/test_c_modules.d
