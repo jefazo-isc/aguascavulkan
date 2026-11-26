@@ -23,7 +23,9 @@ export class WebGPURenderer {
         this.depthWidth = 0;
         this.depthHeight = 0;
         this.sectors = new Map();
-        this.vehicleMesh = null;
+        this.vehiclePipeline = null;
+        this.vehicleMeshes = [];
+        this.vehicleInstanceBuffer = null;
     }
 
     async init(canvas, options = {}) {
@@ -188,6 +190,55 @@ export class WebGPURenderer {
                         },
                     },
                 ],
+            },
+            primitive: {
+                topology: 'triangle-list',
+                cullMode: 'none',
+                frontFace: 'ccw',
+            },
+            depthStencil: {
+                format: 'depth24plus',
+                depthWriteEnabled: true,
+                depthCompare: 'less-equal',
+            },
+        });
+
+        const vertexBuffers = [
+            { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+            { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] },
+            { arrayStride: 8,  attributes: [{ shaderLocation: 2, offset: 0, format: 'float32x2' }] },
+            { arrayStride: 16, attributes: [{ shaderLocation: 3, offset: 0, format: 'float32x4' }] },
+            { arrayStride: 4,  attributes: [{ shaderLocation: 4, offset: 0, format: 'float32' }] },
+        ];
+        // Vehicles: same PBR fragment stage, model matrix + tint + brake from a 96 B instance stream
+        this.vehiclePipeline = this.device.createRenderPipeline({
+            label: 'StreetVulkan WebGPU Vehicle Pipeline',
+            layout: this.device.createPipelineLayout({
+                bindGroupLayouts: [this.bindGroupLayout],
+            }),
+            vertex: {
+                module: shaderModule,
+                entryPoint: 'vs_vehicle',
+                buffers: [
+                    ...vertexBuffers,
+                    {
+                        arrayStride: 96,
+                        stepMode: 'instance',
+                        attributes: [
+                            { shaderLocation: 5, offset: 0, format: 'float32x4' },
+                            { shaderLocation: 6, offset: 16, format: 'float32x4' },
+                            { shaderLocation: 7, offset: 32, format: 'float32x4' },
+                            { shaderLocation: 8, offset: 48, format: 'float32x4' },
+                            { shaderLocation: 9, offset: 64, format: 'float32x4' },
+                            { shaderLocation: 10, offset: 80, format: 'float32' },
+                        ],
+                    },
+                ],
+            },
+            fragment: {
+                module: shaderModule,
+                entryPoint: 'fs_main',
+                targets: [{ format: this.format }],
             },
             primitive: {
                 topology: 'triangle-list',
@@ -542,6 +593,37 @@ export class WebGPURenderer {
             visibleVerts += sec.indexCount;
         }
 
+        // Instanced road-graph vehicles (web/traffic_sim.js)
+        const vehicles = frame.vehicles;
+        if (vehicles && vehicles.instances && this.vehiclePipeline && this.vehicleMeshes.length > 0) {
+            const { instances, typeCounts, typeOffsets } = vehicles;
+            if (!this.vehicleInstanceBuffer || this.vehicleInstanceBuffer.size < instances.byteLength) {
+                if (this.vehicleInstanceBuffer) this.vehicleInstanceBuffer.destroy();
+                this.vehicleInstanceBuffer = this.device.createBuffer({
+                    label: 'vehicle:instances',
+                    size: Math.max(96, instances.byteLength),
+                    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                });
+            }
+            this.device.queue.writeBuffer(this.vehicleInstanceBuffer, 0, instances.buffer, instances.byteOffset, instances.byteLength);
+            pass.setPipeline(this.vehiclePipeline);
+            pass.setVertexBuffer(5, this.vehicleInstanceBuffer);
+            for (let t = 0; t < typeCounts.length; t++) {
+                const count = typeCounts[t];
+                const mesh = this.vehicleMeshes[t] || this.vehicleMeshes[0];
+                if (!count || !mesh) continue;
+                pass.setVertexBuffer(0, mesh.posBuf);
+                pass.setVertexBuffer(1, mesh.normBuf);
+                pass.setVertexBuffer(2, mesh.uvBuf);
+                pass.setVertexBuffer(3, mesh.colBuf);
+                pass.setVertexBuffer(4, mesh.emBuf);
+                pass.setIndexBuffer(mesh.idxBuf, mesh.indexFormat);
+                pass.drawIndexed(mesh.indexCount, count, 0, 0, typeOffsets[t]);
+                drawCalls++;
+                visibleVerts += mesh.indexCount * count;
+            }
+        }
+
         pass.end();
         this.device.queue.submit([commandEncoder.finish()]);
 
@@ -588,56 +670,47 @@ export class WebGPURenderer {
         return calls;
     }
 
-    uploadVehicleModel(meshData) {
-        if (!this.device || !meshData) return;
-        if (this.vehicleMesh) {
-            if (this.vehicleMesh.posBuf) this.vehicleMesh.posBuf.destroy();
-            if (this.vehicleMesh.normBuf) this.vehicleMesh.normBuf.destroy();
-            if (this.vehicleMesh.uvBuf) this.vehicleMesh.uvBuf.destroy();
-            if (this.vehicleMesh.colBuf) this.vehicleMesh.colBuf.destroy();
-            if (this.vehicleMesh.emBuf) this.vehicleMesh.emBuf.destroy();
-            if (this.vehicleMesh.idxBuf) this.vehicleMesh.idxBuf.destroy();
-            this.vehicleMesh = null;
+    _destroyVehicleMesh(mesh) {
+        if (!mesh) return;
+        for (const buf of [mesh.posBuf, mesh.normBuf, mesh.uvBuf, mesh.colBuf, mesh.emBuf, mesh.idxBuf]) {
+            if (buf) buf.destroy();
         }
+    }
 
-        const posBuf = this._createGpuBuffer(meshData.pos, GPUBufferUsage.VERTEX, 'vehicle:pos');
-        const normBuf = this._createGpuBuffer(meshData.norm, GPUBufferUsage.VERTEX, 'vehicle:norm');
-        const uvBuf = this._createGpuBuffer(meshData.uv, GPUBufferUsage.VERTEX, 'vehicle:uv');
-        const colBuf = this._createGpuBuffer(meshData.col, GPUBufferUsage.VERTEX, 'vehicle:col');
-        const emBuf = this._createGpuBuffer(meshData.em, GPUBufferUsage.VERTEX, 'vehicle:em');
-        const idxBuf = this._createGpuBuffer(meshData.indices, GPUBufferUsage.INDEX, 'vehicle:idx');
-
-        this.vehicleMesh = {
-            posBuf,
-            normBuf,
-            uvBuf,
-            colBuf,
-            emBuf,
-            idxBuf,
+    // One mesh per vehicle type (web/traffic_sim.js CAR_TYPES); typeIndex 0 = sedan.
+    uploadVehicleModel(meshData, typeIndex = 0) {
+        if (!this.device || !meshData) return;
+        this._destroyVehicleMesh(this.vehicleMeshes[typeIndex]);
+        this.vehicleMeshes[typeIndex] = {
+            posBuf: this._createGpuBuffer(meshData.pos, GPUBufferUsage.VERTEX, `vehicle${typeIndex}:pos`),
+            normBuf: this._createGpuBuffer(meshData.norm, GPUBufferUsage.VERTEX, `vehicle${typeIndex}:norm`),
+            uvBuf: this._createGpuBuffer(meshData.uv, GPUBufferUsage.VERTEX, `vehicle${typeIndex}:uv`),
+            colBuf: this._createGpuBuffer(meshData.col, GPUBufferUsage.VERTEX, `vehicle${typeIndex}:col`),
+            emBuf: this._createGpuBuffer(meshData.em, GPUBufferUsage.VERTEX, `vehicle${typeIndex}:em`),
+            idxBuf: this._createGpuBuffer(meshData.indices, GPUBufferUsage.INDEX, `vehicle${typeIndex}:idx`),
             indexFormat: meshData.indexFormat || 'uint16',
             indexCount: meshData.indexCount,
             vertexCount: meshData.vertexCount,
         };
     }
 
+    get vehicleMesh() {
+        return this.vehicleMeshes[0] || null;
+    }
+
     destroy() {
         for (const key of Array.from(this.sectors.keys())) {
             this.unloadSector(key);
         }
-        if (this.vehicleMesh) {
-            if (this.vehicleMesh.posBuf) this.vehicleMesh.posBuf.destroy();
-            if (this.vehicleMesh.normBuf) this.vehicleMesh.normBuf.destroy();
-            if (this.vehicleMesh.uvBuf) this.vehicleMesh.uvBuf.destroy();
-            if (this.vehicleMesh.colBuf) this.vehicleMesh.colBuf.destroy();
-            if (this.vehicleMesh.emBuf) this.vehicleMesh.emBuf.destroy();
-            if (this.vehicleMesh.idxBuf) this.vehicleMesh.idxBuf.destroy();
-            this.vehicleMesh = null;
-        }
+        for (const mesh of this.vehicleMeshes) this._destroyVehicleMesh(mesh);
+        this.vehicleMeshes = [];
+        if (this.vehicleInstanceBuffer) this.vehicleInstanceBuffer.destroy();
         if (this.depthTexture) this.depthTexture.destroy();
         if (this.satelliteTexture) this.satelliteTexture.destroy();
         if (this.facadeTexture) this.facadeTexture.destroy();
         if (this.uniformBuffer) this.uniformBuffer.destroy();
         this.pipeline = null;
         this.buildingPipeline = null;
+        this.vehiclePipeline = null;
     }
 }
