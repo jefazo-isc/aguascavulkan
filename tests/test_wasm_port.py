@@ -16,15 +16,18 @@ import unittest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 WEB_DIR = os.path.join(ROOT, "web")
 SHOWCASE_REPO_DIR = os.path.join(ROOT, "street_vulkan_wasm_repo")
-LEGACY_SHOWCASE_REPO_DIR = "/home/yahir/street_vulkan_wasm_repo"
 WASM_MAGIC_AND_VERSION = b"\x00asm\x01\x00\x00\x00"
 MAX_GITHUB_FILE_BYTES = 95 * 1024 * 1024
 
 
 def _resolve_showcase_repo() -> str:
+    """Return the showcase repo path, or raise SkipTest if it does not exist."""
     if os.path.isdir(SHOWCASE_REPO_DIR):
         return SHOWCASE_REPO_DIR
-    return LEGACY_SHOWCASE_REPO_DIR
+    raise unittest.SkipTest(
+        f"Showcase repo not found at '{SHOWCASE_REPO_DIR}'. "
+        "Clone it or run 'python3 tools/prepare_github_wasm_repo.py' first."
+    )
 
 
 def _run_node_wasm_probe(wasm_path: str) -> dict:
