@@ -7,7 +7,8 @@
 //   - models/city_buildings.bin (CBB1 Overture footprints, tools/build_city_buildings.py)
 // Cells covered by a full-detail GLB sector are not drawn, so the basemap only
 // fills the rest of the city (Primer / Tercer Anillo, etc.).
-// Meshes use the engine material IDs: 0.0 terrain, 0.95 street, 0.35 roof, 1.0 atlas facade.
+// Meshes use the engine material IDs: 0.0 terrain, 0.95 street/sidewalk, 0.35 roof,
+// 1.0 atlas facade, 0.6 shadow, 0.7 trunk, 0.8 foliage (same as tools/procedural_props.py).
 // ============================================================================
 
 export const BASEMAP_MACRO_SIZE = 1024.0;
@@ -26,7 +27,44 @@ const WALL_COLORS = [
     [0.80, 0.76, 0.70], [0.75, 0.72, 0.68], [0.82, 0.75, 0.45], [0.88, 0.82, 0.72],
     [0.70, 0.78, 0.85], [0.78, 0.68, 0.58], [0.70, 0.72, 0.75],
 ];
-const ROOF_COLOR = [0.62, 0.60, 0.57, 0.35];
+const ROOF_COLOR = [0.76, 0.74, 0.70, 0.35];   // dominant rooftop colour of the GLB sectors
+
+// Street furniture copied from tools/procedural_props.py (make_sidewalk_3d / make_tree_3d)
+const SIDEWALK_WIDTH = 1.6;
+const CURB_HEIGHT = 0.15;
+const SIDEWALK_COLOR = [0.58, 0.56, 0.54, 0.95];
+const CURB_COLOR = [0.52, 0.50, 0.48, 0.95];
+const INTERSECTION_TRIM = 7.0;   // sidewalks stop this far from a node shared by 3+ edges
+const TREE_SPACING = 30.0;
+const TREE_BUILDING_CLEARANCE = 2.5;
+const SHADOW_COLOR = [0.05, 0.08, 0.05, 0.6];
+const TRUNK_COLOR = [0.28, 0.18, 0.11, 0.7];
+const LEAF_COLORS = [   // fresno, encino, pirul/olivo, jacaranda
+    [0.16, 0.54, 0.18], [0.10, 0.42, 0.15], [0.28, 0.48, 0.16], [0.42, 0.22, 0.58],
+];
+const BARK_TILE = [6, 1];  // "madera_arbol" in the facade atlas
+
+// Deterministic 0..1 hash so the same street always gets the same trees
+function hash01(a, b) {
+    let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x632be5ab, 0xc2b2ae35);
+    h ^= h >>> 15;
+    h = Math.imul(h, 0x2c1b3c6d);
+    h ^= h >>> 12;
+    return (h >>> 0) / 4294967296;
+}
+
+const ICO = (() => {
+    const t = (1 + Math.sqrt(5)) / 2;
+    const v = [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+               [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map(([x, y, z]) => {
+        const l = Math.hypot(x, y, z);
+        return [x / l, y / l, z / l];
+    });
+    const f = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6],
+               [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10],
+               [8, 6, 7], [9, 8, 1]];
+    return { v, f };
+})();
 const ATLAS_TILE = 0.125;
 const ATLAS_INSET = 0.004;
 const CBB_QUANT = 32.0;
@@ -91,7 +129,7 @@ function triangulatePolygon(xz, n, out, base) {
     for (let i = 1; i + 1 < idx.length; i++) out.push(base + idx[0], base + idx[i], base + idx[i + 1]);
 }
 
-function addBuildings(mb, bm, buildings, cellKey) {
+function addBuildings(mb, bm, buildings, cellKey, footprints) {
     const cell = buildings.cells.get(cellKey);
     if (!cell) return 0;
     const ox = cell.mx * BASEMAP_MACRO_SIZE - CBB_MARGIN;
@@ -114,6 +152,7 @@ function addBuildings(mb, bm, buildings, cellKey) {
             if (t > maxT) maxT = t;
         }
         pIdx += n;
+        if (footprints) footprints.add(xz.slice(0, n * 2));
         const y0 = minT - 0.5;
         const y1 = maxT + height;
         const [tu, tv] = FACADE_TILES[cls];
@@ -261,7 +300,138 @@ function addTerrain(mb, bm, cellX0, cellZ0) {
     }
 }
 
-function addRoadSegment(mb, bm, ax, ay, az, bx, by, bz, halfWidth, color) {
+// Spatial grid of building footprints (flat [x0, z0, x1, z1, ...] rings) for tree placement
+class FootprintGrid {
+    constructor(cell = 16) {
+        this.cell = cell;
+        this.map = new Map();
+    }
+
+    add(ring) {
+        let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+        for (let i = 0; i < ring.length; i += 2) {
+            x0 = Math.min(x0, ring[i]); x1 = Math.max(x1, ring[i]);
+            z0 = Math.min(z0, ring[i + 1]); z1 = Math.max(z1, ring[i + 1]);
+        }
+        const entry = { ring, x0, z0, x1, z1 };
+        for (let gx = Math.floor(x0 / this.cell); gx <= Math.floor(x1 / this.cell); gx++) {
+            for (let gz = Math.floor(z0 / this.cell); gz <= Math.floor(z1 / this.cell); gz++) {
+                const k = gx * 100003 + gz;
+                let list = this.map.get(k);
+                if (!list) this.map.set(k, (list = []));
+                list.push(entry);
+            }
+        }
+    }
+
+    // True if (x, z) is inside a footprint or closer than `margin` to one
+    near(x, z, margin) {
+        const gx = Math.floor(x / this.cell);
+        const gz = Math.floor(z / this.cell);
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dz = -1; dz <= 1; dz++) {
+                const list = this.map.get((gx + dx) * 100003 + gz + dz);
+                if (!list) continue;
+                for (const e of list) {
+                    if (x < e.x0 - margin || x > e.x1 + margin || z < e.z0 - margin || z > e.z1 + margin) continue;
+                    if (pointNearRing(e.ring, x, z, margin)) return true;
+                }
+            }
+        }
+        return false;
+    }
+}
+
+function pointNearRing(ring, x, z, margin) {
+    let inside = false;
+    const n = ring.length / 2;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+        const xi = ring[i * 2], zi = ring[i * 2 + 1], xj = ring[j * 2], zj = ring[j * 2 + 1];
+        if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) inside = !inside;
+        const ex = xj - xi, ez = zj - zi;
+        const l2 = ex * ex + ez * ez;
+        const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - xi) * ex + (z - zi) * ez) / l2)) : 0;
+        if (Math.hypot(x - (xi + t * ex), z - (zi + t * ez)) < margin) return true;
+    }
+    return inside;
+}
+
+function addSidewalks(mb, ax, az, bx, bz, ya, yb, halfWidth, t0, t1) {
+    const dx = bx - ax;
+    const dz = bz - az;
+    const len = Math.hypot(dx, dz);
+    const fx = dx / len;
+    const fz = dz / len;
+    // Interior joints of a polyline get a short overlap so bends do not open gaps
+    const e0 = t0 > 0 ? 0 : -0.6 / len;
+    const e1 = t1 < 1 ? 0 : 0.6 / len;
+    const sx = ax + dx * (t0 + e0), sz = az + dz * (t0 + e0), sy = ya + (yb - ya) * t0 + CURB_HEIGHT;
+    const ex = ax + dx * (t1 + e1), ez = az + dz * (t1 + e1), ey = ya + (yb - ya) * t1 + CURB_HEIGHT;
+    for (const side of [1, -1]) {
+        const px = -fz * side;
+        const pz = fx * side;
+        const inner = halfWidth;
+        const outer = halfWidth + SIDEWALK_WIDTH;
+        const s0 = mb.vertex(sx + px * inner, sy, sz + pz * inner, 0, 1, 0, SIDEWALK_COLOR);
+        const s1 = mb.vertex(sx + px * outer, sy, sz + pz * outer, 0, 1, 0, SIDEWALK_COLOR);
+        const s2 = mb.vertex(ex + px * inner, ey, ez + pz * inner, 0, 1, 0, SIDEWALK_COLOR);
+        const s3 = mb.vertex(ex + px * outer, ey, ez + pz * outer, 0, 1, 0, SIDEWALK_COLOR);
+        mb.idx.push(s0, s1, s2, s2, s1, s3);
+        // Curb face looking at the roadway
+        const c0 = mb.vertex(sx + px * inner, sy, sz + pz * inner, -px, 0, -pz, CURB_COLOR);
+        const c1 = mb.vertex(ex + px * inner, ey, ez + pz * inner, -px, 0, -pz, CURB_COLOR);
+        const c2 = mb.vertex(sx + px * inner, sy - CURB_HEIGHT - 0.1, sz + pz * inner, -px, 0, -pz, CURB_COLOR);
+        const c3 = mb.vertex(ex + px * inner, ey - CURB_HEIGHT - 0.1, ez + pz * inner, -px, 0, -pz, CURB_COLOR);
+        mb.idx.push(c0, c2, c1, c1, c2, c3);
+    }
+}
+
+function addTree(mb, x, gy, z, radius, species, shade) {
+    // Shadow disc on the sidewalk (matID 0.6)
+    const sr = radius * 1.25;
+    const centre = mb.vertex(x, gy + 0.03, z, 0, 1, 0, SHADOW_COLOR);
+    const ring = [];
+    for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4;
+        ring.push(mb.vertex(x + sr * Math.cos(a), gy + 0.03, z + sr * Math.sin(a), 0, 1, 0, SHADOW_COLOR));
+    }
+    for (let k = 0; k < 8; k++) mb.idx.push(centre, ring[k], ring[(k + 1) % 8]);
+
+    // Trunk: square prism with the bark tile of the atlas (matID 0.7)
+    const th = 3.5 + shade * 1.2;
+    const tr = 0.3;
+    const [tu, tv] = BARK_TILE;
+    const u0 = tu * ATLAS_TILE + ATLAS_INSET, u1 = (tu + 1) * ATLAS_TILE - ATLAS_INSET;
+    const v0 = tv * ATLAS_TILE + ATLAS_INSET, v1 = (tv + 1) * ATLAS_TILE - ATLAS_INSET;
+    const corners = [[-tr, -tr], [tr, -tr], [tr, tr], [-tr, tr]];
+    for (let k = 0; k < 4; k++) {
+        const [ax, az] = corners[k];
+        const [bx, bz] = corners[(k + 1) % 4];
+        const nx = (bz - az) / (2 * tr), nz = -(bx - ax) / (2 * tr);
+        const w0 = mb.vertexUV(x + ax, gy, z + az, nx, 0, nz, u0, v1, TRUNK_COLOR);
+        const w1 = mb.vertexUV(x + bx, gy, z + bz, nx, 0, nz, u1, v1, TRUNK_COLOR);
+        const w2 = mb.vertexUV(x + bx, gy + th, z + bz, nx, 0, nz, u1, v0, TRUNK_COLOR);
+        const w3 = mb.vertexUV(x + ax, gy + th, z + az, nx, 0, nz, u0, v0, TRUNK_COLOR);
+        mb.idx.push(w0, w1, w2, w0, w2, w3);
+    }
+
+    // Crown: low-poly icosahedron with flat normals (matID 0.8)
+    const base = LEAF_COLORS[species];
+    const k = 0.9 + shade * 0.2;
+    const leaf = [base[0] * k, base[1] * k, base[2] * k, 0.8];
+    const cy = gy + th + radius * 0.75;
+    for (const [i0, i1, i2] of ICO.f) {
+        const a = ICO.v[i0], b = ICO.v[i1], c = ICO.v[i2];
+        const nx = a[0] + b[0] + c[0], ny = a[1] + b[1] + c[1], nz = a[2] + b[2] + c[2];
+        const nl = Math.hypot(nx, ny, nz);
+        for (const p of [a, b, c]) {
+            mb.idx.push(mb.vertex(x + p[0] * radius, cy + p[1] * radius * 0.9, z + p[2] * radius,
+                nx / nl, ny / nl, nz / nl, leaf));
+        }
+    }
+}
+
+function addRoadSegment(mb, bm, ax, ay, az, bx, by, bz, halfWidth, color, walk = null) {
     const dx = bx - ax;
     const dz = bz - az;
     const len = Math.hypot(dx, dz);
@@ -287,7 +457,15 @@ function addRoadSegment(mb, bm, ax, ay, az, bx, by, bz, halfWidth, color) {
     // Overpasses (pasos a desnivel): close the deck down to the terrain so it does not float
     const ta = basemapHeightAt(bm, ax, az);
     const tb = basemapHeightAt(bm, bx, bz);
-    if (ya - ta > BRIDGE_MIN_CLEARANCE || yb - tb > BRIDGE_MIN_CLEARANCE) {
+    const isBridge = ya - ta > BRIDGE_MIN_CLEARANCE || yb - tb > BRIDGE_MIN_CLEARANCE;
+    if (walk && !isBridge) {
+        // Sidewalk span [t0, t1] of this segment, trimmed near intersections
+        const t0 = Math.max(0, Math.min(1, (walk.trimA - walk.s0) / len));
+        const t1 = Math.max(0, Math.min(1, (walk.edgeLen - walk.trimB - walk.s0) / len));
+        if (t1 - t0 > 0.02) addSidewalks(mb, ax, az, bx, bz, ya, yb, halfWidth, t0, t1);
+    }
+    if (walk) walk.isBridge = isBridge;
+    if (isBridge) {
         for (const side of [1, -1]) {
             const ox = px * side;
             const oz = pz * side;
@@ -303,13 +481,20 @@ function addRoadSegment(mb, bm, ax, ay, az, bx, by, bz, halfWidth, color) {
 }
 
 // Assigns every road polyline segment to the macro cell containing its midpoint.
+// Each entry is (edge, point offset, distance along the edge); the map also carries
+// `edgeLen` (2D polyline length per edge) and `nodeDegree` for sidewalk trimming.
 export function bucketRoadSegments(graph) {
     const buckets = new Map();
     const pts = graph.points;
+    const edgeLen = new Float32Array(graph.nEdges);
+    const nodeDegree = new Uint8Array(graph.nNodes);
     for (let e = 0; e < graph.nEdges; e++) {
         if (!graph.edgeValid[e]) continue;
+        nodeDegree[graph.edgeA[e]] = Math.min(255, nodeDegree[graph.edgeA[e]] + 1);
+        nodeDegree[graph.edgeB[e]] = Math.min(255, nodeDegree[graph.edgeB[e]] + 1);
         const po = graph.edgePtOff[e];
         const pc = graph.edgePtCount[e];
+        let s = 0;
         for (let k = 0; k < pc - 1; k++) {
             const a = (po + k) * 3;
             const mx = Math.floor((pts[a] + pts[a + 3]) * 0.5 / BASEMAP_MACRO_SIZE);
@@ -320,9 +505,13 @@ export function bucketRoadSegments(graph) {
                 list = [];
                 buckets.set(key, list);
             }
-            list.push(e, a);
+            list.push(e, a, s);
+            s += Math.hypot(pts[a + 3] - pts[a], pts[a + 5] - pts[a + 2]);
         }
+        edgeLen[e] = s;
     }
+    buckets.edgeLen = edgeLen;
+    buckets.nodeDegree = nodeDegree;
     return buckets;
 }
 
@@ -339,20 +528,53 @@ export function buildBasemapCell(bm, graph, roadBuckets, mx, mz, buildings = nul
     const mb = new MeshBuilder();
     addTerrain(mb, bm, cellX0, cellZ0);
 
+    // Buildings first: their footprints keep the street trees off the facades
+    const footprints = buildings ? new FootprintGrid() : null;
+    const buildingCount = buildings ? addBuildings(mb, bm, buildings, `${mx}_${mz}`, footprints) : 0;
+
     const segs = graph && roadBuckets ? roadBuckets.get(`${mx}_${mz}`) : null;
     if (segs) {
         const pts = graph.points;
-        for (let i = 0; i < segs.length; i += 2) {
+        const { edgeLen, nodeDegree } = roadBuckets;
+        const walk = { s0: 0, edgeLen: 0, trimA: 0, trimB: 0, isBridge: false };
+        for (let i = 0; i < segs.length; i += 3) {
             const e = segs[i];
             const a = segs[i + 1];
             const lanes = graph.edgeLanesFwd[e] + graph.edgeLanesRev[e];
             const width = graph.edgeWidth[e] > 0 ? graph.edgeWidth[e] : Math.max(1, lanes) * 3.2;
             const color = lanes >= 3 ? ARTERIAL_COLOR : STREET_COLOR;
-            addRoadSegment(mb, bm, pts[a], pts[a + 1], pts[a + 2], pts[a + 3], pts[a + 4], pts[a + 5], width * 0.5, color);
+            const halfWidth = width * 0.5;
+            walk.s0 = segs[i + 2];
+            walk.edgeLen = edgeLen ? edgeLen[e] : Infinity;
+            walk.trimA = nodeDegree && nodeDegree[graph.edgeA[e]] >= 3 ? INTERSECTION_TRIM : 0;
+            walk.trimB = nodeDegree && nodeDegree[graph.edgeB[e]] >= 3 ? INTERSECTION_TRIM : 0;
+            addRoadSegment(mb, bm, pts[a], pts[a + 1], pts[a + 2], pts[a + 3], pts[a + 4], pts[a + 5],
+                halfWidth, color, edgeLen ? walk : null);
+
+            // Street trees on the sidewalk, every TREE_SPACING metres along the edge
+            if (!footprints || walk.isBridge || !edgeLen) continue;
+            const segLen = Math.hypot(pts[a + 3] - pts[a], pts[a + 5] - pts[a + 2]);
+            if (segLen < 0.5) continue;
+            const phase = hash01(e, 7) * TREE_SPACING;
+            const first = Math.ceil((walk.s0 - phase) / TREE_SPACING);
+            for (let n = first; phase + n * TREE_SPACING < walk.s0 + segLen; n++) {
+                const d = phase + n * TREE_SPACING;
+                if (d < walk.trimA + 4 || d > walk.edgeLen - walk.trimB - 4) continue;
+                const t = (d - walk.s0) / segLen;
+                const fx = (pts[a + 3] - pts[a]) / segLen, fz = (pts[a + 5] - pts[a + 2]) / segLen;
+                const side = (n & 1) ? 1 : -1;
+                const off = halfWidth + (lanes >= 3 ? 1.8 : 1.4);
+                const tx = pts[a] + (pts[a + 3] - pts[a]) * t - fz * side * off;
+                const tz = pts[a + 2] + (pts[a + 5] - pts[a + 2]) * t + fx * side * off;
+                if (footprints.near(tx, tz, TREE_BUILDING_CLEARANCE)) continue;
+                const roadY = pts[a + 1] + (pts[a + 4] - pts[a + 1]) * t;
+                const gy = basemapRoadHeight(bm, tx, roadY, tz) + CURB_HEIGHT;
+                const h = hash01(e, n);
+                const radius = (lanes >= 3 ? 2.1 : 1.8) + h * 0.5;
+                addTree(mb, tx, gy, tz, radius, Math.floor(h * 4) % 4, hash01(n, e));
+            }
         }
     }
-
-    const buildingCount = buildings ? addBuildings(mb, bm, buildings, `${mx}_${mz}`) : 0;
 
     const meshData = mb.toMeshData();
     const chunks = [{

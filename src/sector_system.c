@@ -180,6 +180,7 @@ int sector_system_init(SectorSystem *ss, const char *manifestPath) {
 
     char *cursor = p + 1;
     int sCount = 0;
+    int missing = 0;
 
     while (sCount < MAX_MACRO_SECTORS) {
         char *secObj = strstr(cursor, "\"mx\"");
@@ -193,7 +194,15 @@ int sector_system_init(SectorSystem *ss, const char *manifestPath) {
         parse_sector_entry(sec, secObj, secEnd);
 
         if (sec->vertexCount > 0 && sec->filepath[0] != '\0') {
-            sCount++;
+            /* Sectores listados pero ausentes en disco: se omiten una sola vez en lugar
+             * de reintentar su lectura en cada actualización del streaming. */
+            FILE *probe = fopen(sec->filepath, "rb");
+            if (probe) {
+                fclose(probe);
+                sCount++;
+            } else {
+                missing++;
+            }
         }
         cursor = secEnd;
     }
@@ -208,6 +217,9 @@ int sector_system_init(SectorSystem *ss, const char *manifestPath) {
 
     printf("[SectorSystem] ✅ Manifiesto cargado: %d macro-sectores (%.0fm, chunks %.0fm)\n",
            ss->sectorCount, ss->macroSize, ss->chunkSize);
+    if (missing > 0) {
+        printf("[SectorSystem] %d sectores del manifiesto no están en disco y se omiten\n", missing);
+    }
     return 1;
 }
 
