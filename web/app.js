@@ -1036,6 +1036,28 @@ async function main() {
         maybeStreamNearbySectors(wp.x, wp.z);
     }
 
+    // Primer Anillo waypoints — Av. Convención de 1914 (inner ring, ~2.3 km radius)
+    const PRIMER_ANILLO_WAYPOINTS = [
+        { name: 'Primer Anillo Norte — Av. Convención (Nte)', x: 50.0, y: 12.0, z: -1800.0, yaw: 0.0, pitch: -5.0 },
+        { name: 'Primer Anillo Oriente — Av. Convención (Ote)', x: 1800.0, y: 12.0, z: -200.0, yaw: -90.0, pitch: -5.0 },
+        { name: 'Primer Anillo Sur — Av. Convención (Sur)', x: -100.0, y: 12.0, z: 1700.0, yaw: 180.0, pitch: -5.0 },
+        { name: 'Primer Anillo Poniente — Av. Convención (Pte)', x: -2000.0, y: 12.0, z: 100.0, yaw: 90.0, pitch: -5.0 },
+    ];
+    let ring1WaypointIdx = 0;
+
+    function teleportPrimerAnillo() {
+        const wp = PRIMER_ANILLO_WAYPOINTS[ring1WaypointIdx];
+        ring1WaypointIdx = (ring1WaypointIdx + 1) % PRIMER_ANILLO_WAYPOINTS.length;
+        const posBase = MEM_POS_PTR >> 2;
+        f32Mem[posBase + 0] = wp.x;
+        f32Mem[posBase + 1] = wp.y;
+        f32Mem[posBase + 2] = wp.z;
+        state.yaw = wp.yaw;
+        state.pitch = wp.pitch;
+        showToast(`Teleport: ${wp.name}`);
+        maybeStreamNearbySectors(wp.x, wp.z);
+    }
+
     // 5. Sector Manifest & Streaming Loader (Prioritize Sector 0,0)
     const sectorCache = new Map(); // sectorKey -> { entry, aabbData, chunkCount, cx, cz, lastUsed }
     const cullFlagsBySector = new Map(); // sectorKey -> Uint8Array(chunkCount)
@@ -1206,6 +1228,8 @@ async function main() {
             toggleTimeFreeze();
         } else if (e.code === 'KeyR') {
             resetCamera();
+        } else if (e.code === 'Digit1' || e.code === 'Numpad1') {
+            teleportPrimerAnillo();
         } else if (e.code === 'Digit3' || e.code === 'Numpad3') {
             teleportTercerAnillo();
         } else if (e.code === 'KeyH') {
@@ -1318,6 +1342,7 @@ async function main() {
     bindHoldButton('btn-sprint', () => { touchMove.sprint = true; }, () => { touchMove.sprint = false; });
 
     document.getElementById('btn-rolcar')?.addEventListener('click', resetCamera);
+    document.getElementById('btn-primer-anillo')?.addEventListener('click', teleportPrimerAnillo);
     document.getElementById('btn-tercer-anillo')?.addEventListener('click', teleportTercerAnillo);
     document.getElementById('btn-pause')?.addEventListener('click', () => togglePause());
     document.getElementById('pause-resume')?.addEventListener('click', () => togglePause(false));
@@ -1381,6 +1406,12 @@ async function main() {
     document.getElementById('pause-reset-cam')?.addEventListener('click', () => {
         resetCamera();
         logPause('📍 Cámara reubicada en Rolcar Paseo de la Cruz');
+    });
+
+    document.getElementById('pause-teleport-primer-anillo')?.addEventListener('click', () => {
+        teleportPrimerAnillo();
+        logPause('🏛️ Teleport a Primer Anillo (Av. Convención)');
+        togglePause(false);
     });
 
     document.getElementById('pause-teleport-tercer-anillo')?.addEventListener('click', () => {

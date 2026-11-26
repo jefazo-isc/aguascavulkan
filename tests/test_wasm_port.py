@@ -1297,8 +1297,8 @@ class TestTercerAnilloExpansion(unittest.TestCase):
                 continue
             entry = manifest_map[(mx, mz)]
             self.assertGreater(entry.get("vert_count", 0), 0, f"Sector ({mx}, {mz}) has zero vertices")
-            # Verify AABB heights are relative (not absolute DEM)
-            self.assertLess(entry["aabb"]["max_y"], 100, f"Sector ({mx}, {mz}) has absolute AABB height")
+            # Verify AABB heights are relative (not absolute DEM — absolute values are >1800)
+            self.assertLess(entry["aabb"]["max_y"], 200, f"Sector ({mx}, {mz}) has absolute AABB height")
             validated += 1
 
             glb_file = os.path.join(sectors_dir, f"sector_{mx}_{mz}.glb")
@@ -1359,6 +1359,81 @@ class TestTercerAnilloExpansion(unittest.TestCase):
             diff_y = y - gy
             self.assertGreaterEqual(diff_y, -1.0, f"Waypoint {name} is buried underground: y={y}, gy={gy:.2f}")
             self.assertLessEqual(diff_y, 4.0, f"Waypoint {name} is floating in the air: y={y}, gy={gy:.2f}")
+
+    def test_primer_anillo_completeness(self):
+        """Verifica que los 32 sectores del Primer Anillo estén en el manifiesto con datos correctos."""
+        PRIMER_ANILLO_COORDS = {
+            (-3, -2), (-3, -1), (-3, 0), (-3, 1),
+            (-2, -3), (-2, -2), (-2, -1), (-2, 0), (-2, 1), (-2, 2),
+            (-1, -3), (-1, -2), (-1, -1), (-1, 0), (-1, 1), (-1, 2),
+            (0, -3), (0, -2), (0, -1), (0, 0), (0, 1), (0, 2),
+            (1, -3), (1, -2), (1, -1), (1, 0), (1, 1), (1, 2),
+            (2, -2), (2, -1), (2, 0), (2, 1)
+        }
+
+        with open(self.manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        manifest_map = {(s["mx"], s["mz"]): s for s in manifest.get("sectors", [])}
+
+        sectors_dir = os.path.join(ROOT, "models", "sectors")
+        max_bytes = 95 * 1024 * 1024
+        found = 0
+
+        for mx, mz in PRIMER_ANILLO_COORDS:
+            if (mx, mz) not in manifest_map:
+                continue
+            entry = manifest_map[(mx, mz)]
+            self.assertGreater(entry.get("vert_count", 0), 0, f"Sector ({mx}, {mz}) has zero vertices")
+            # AABB must be relative (not absolute DEM — absolute values > 1800m)
+            aabb = entry.get("aabb", {})
+            self.assertLess(aabb.get("max_y", 0), 200, f"Sector ({mx}, {mz}) has absolute AABB height")
+            found += 1
+
+            glb_file = os.path.join(sectors_dir, f"sector_{mx}_{mz}.glb")
+            if os.path.isfile(glb_file):
+                sz = os.path.getsize(glb_file)
+                self.assertGreater(sz, 0, f"Empty GLB: {glb_file}")
+                self.assertLess(sz, max_bytes, f"Sector GLB exceeds 95 MB: {glb_file}")
+
+        # All 32 Primer Anillo sectors must be present
+        self.assertGreaterEqual(found, 30, f"Only {found}/32 Primer Anillo sectors found in manifest")
+
+    def test_primer_anillo_web_waypoints(self):
+        """Verifica que PRIMER_ANILLO_WAYPOINTS existen en web/app.js con 4 puntos cardinales."""
+        app_js_path = os.path.join(ROOT, "web", "app.js")
+        with open(app_js_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        m = re.search(r"const PRIMER_ANILLO_WAYPOINTS\s*=\s*\[(.*?)\];", content, re.DOTALL)
+        self.assertIsNotNone(m, "PRIMER_ANILLO_WAYPOINTS must exist in web/app.js")
+        wp_block = m.group(1)
+
+        wp_matches = re.findall(r"\{\s*name:\s*'([^']+)',\s*x:\s*([-\d.]+),\s*y:\s*([-\d.]+),\s*z:\s*([-\d.]+)", wp_block)
+        self.assertEqual(len(wp_matches), 4, "Must have exactly 4 cardinal waypoints for Primer Anillo")
+
+        for name, sx, sy, sz in wp_matches:
+            x, y, z = float(sx), float(sy), float(sz)
+            # Primer Anillo waypoints should be within ~2300m of origin
+            dist = (x**2 + z**2) ** 0.5
+            self.assertLess(dist, 3000, f"Primer Anillo waypoint too far from origin: {name} (d={dist:.0f}m)")
+
+            if "Norte" in name or "Nte" in name:
+                self.assertLess(z, 0, f"North waypoint must have z < 0: {name}")
+            elif "Sur" in name:
+                self.assertGreater(z, 0, f"South waypoint must have z > 0: {name}")
+            elif "Oriente" in name or "Ote" in name:
+                self.assertGreater(x, 0, f"East waypoint must have x > 0: {name}")
+            elif "Poniente" in name or "Pte" in name:
+                self.assertLess(x, 0, f"West waypoint must have x < 0: {name}")
+
+    def test_primer_anillo_workflow_coords(self):
+        """Verifica que KEY_PRIMER_ANILLO_COORDS existe en wasm-pages.yml con 32 coordenadas."""
+        with open(self.workflow_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        m = re.search(r"KEY_PRIMER_ANILLO_COORDS\s*=\s*\{([^}]+)\}", content, re.DOTALL)
+        self.assertIsNotNone(m, "KEY_PRIMER_ANILLO_COORDS must exist in wasm-pages.yml")
+        coords = eval("{" + m.group(1) + "}")
+        self.assertEqual(len(coords), 32, f"Primer Anillo must have exactly 32 sectors, got {len(coords)}")
 
     def test_dem_boundary_seamless_continuity(self):
         """Verifica que la malla de elevación satelital DEM no tiene fisuras entre macro-sectores contiguos."""

@@ -93,6 +93,19 @@ jobs:
               (4, 0), (4, 1), (4, 2), (5, 0), (5, 1)
           }
 
+          # Primer Anillo (Av. Convención de 1914, Centro Histórico) — 32 sectors within 2300m radius
+          KEY_PRIMER_ANILLO_COORDS = {
+              (-3, -2), (-3, -1), (-3, 0), (-3, 1),
+              (-2, -3), (-2, -2), (-2, -1), (-2, 0), (-2, 1), (-2, 2),
+              (-1, -3), (-1, -2), (-1, -1), (-1, 0), (-1, 1), (-1, 2),
+              (0, -3), (0, -2), (0, -1), (0, 0), (0, 1), (0, 2),
+              (1, -3), (1, -2), (1, -1), (1, 0), (1, 1), (1, 2),
+              (2, -2), (2, -1), (2, 0), (2, 1)
+          }
+
+          # Union of all ring sectors for packaging
+          ALL_KEY_COORDS = KEY_TERCER_ANILLO_COORDS | KEY_PRIMER_ANILLO_COORDS
+
           # Package sector_0_0.glb and its chunks unconditionally if present
           for f in ("sector_0_0.glb", "chunks_0_0.json"):
               p = pathlib.Path("models/sectors") / f
@@ -112,7 +125,7 @@ jobs:
                       continue
                   glb_file = pathlib.Path("models/sectors") / f"sector_{mx}_{mz}.glb"
                   chunk_file = pathlib.Path("models/sectors") / f"chunks_{mx}_{mz}.json"
-                  is_key = (mx, mz) in KEY_TERCER_ANILLO_COORDS or (mx == 0 and mz == 0)
+                  is_key = (mx, mz) in ALL_KEY_COORDS or (mx == 0 and mz == 0)
                   if is_key and glb_file.is_file() and glb_file.stat().st_size < MAX_BYTES:
                       shutil.copy2(glb_file, site_sectors_dir / glb_file.name)
                       if chunk_file.is_file() and chunk_file.stat().st_size < MAX_BYTES:
@@ -130,7 +143,7 @@ jobs:
                   json.dumps(out_manifest, separators=(",", ":")),
                   encoding="utf-8",
               )
-              print(f"[wasm-pages] Empaquetados {len(packaged)} sectores clave del Tercer Anillo (< 95 MB) en _site/models/sectors/")
+              print(f"[wasm-pages] Empaquetados {len(packaged)} sectores clave (Primer + Tercer Anillo, < 95 MB) en _site/models/sectors/")
 
           for root, _, files in os.walk("_site"):
               for fname in files:
