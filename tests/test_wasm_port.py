@@ -1627,5 +1627,107 @@ process.stdout.write(JSON.stringify({ draws, drawCalls: stats.drawCalls }));
         self.assertIn("drawElementsInstanced", wgl)
 
 
+
+class TestCityBasemap(unittest.TestCase):
+    """Low-detail Aguascalientes basemap (tools/build_city_basemap.py + web/city_basemap.js)."""
+
+    BASEMAP = os.path.join(ROOT, "models", "city_basemap.bin")
+
+    def setUp(self):
+        if not os.path.isfile(self.BASEMAP):
+            self.skipTest("models/city_basemap.bin not present")
+
+    def test_basemap_header_covers_road_network(self):
+        import struct
+        with open(self.BASEMAP, "rb") as f:
+            raw = f.read()
+        magic, cols, rows, x0, z0, spacing, min_h, max_h = struct.unpack_from("<4sIIfffff", raw, 0)
+        self.assertEqual(magic, b"CBM1")
+        self.assertEqual(len(raw), 32 + cols * rows * 4)
+        self.assertEqual(1024.0 % spacing, 0.0)
+        self.assertEqual(x0 % 1024.0, 0.0)
+        self.assertEqual(z0 % 1024.0, 0.0)
+        self.assertLess(min_h, max_h)
+        # Must contain both ring waypoints (Primer Anillo ~ -1.8 km, Tercer Anillo Norte ~ -7.1 km)
+        x1 = x0 + (cols - 1) * spacing
+        z1 = z0 + (rows - 1) * spacing
+        for wx, wz in ((50.0, -1800.0), (532.0, -7134.0), (-7500.0, 15.0), (4927.0, -7.5)):
+            self.assertTrue(x0 <= wx <= x1 and z0 <= wz <= z1, f"waypoint {wx},{wz} outside basemap")
+
+    def test_basemap_tool_is_reproducible(self):
+        try:
+            import numpy  # noqa: F401  (tools/geo_dem.py dependency)
+        except ImportError:
+            self.skipTest("numpy not installed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = os.path.join(tmpdir, "city_basemap.bin")
+            proc = subprocess.run(
+                [sys.executable, os.path.join(ROOT, "tools", "build_city_basemap.py"), "--output", out],
+                capture_output=True, text=True, cwd=ROOT,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with open(out, "rb") as a, open(self.BASEMAP, "rb") as b:
+                self.assertEqual(a.read(), b.read(), "Regenerated city_basemap.bin differs from the committed one")
+
+    def test_basemap_matches_roads_and_builds_valid_cells(self):
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node is not installed in PATH")
+        script = r"""
+import fs from 'node:fs';
+const { parseRoadGraph } = await import('./web/traffic_sim.js');
+const bmMod = await import('./web/city_basemap.js');
+const load = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); };
+const graph = parseRoadGraph(load('models/road_network.bin'));
+const bm = bmMod.parseCityBasemap(load('models/city_basemap.bin'));
+
+const diffs = [];
+for (let i = 0; i < graph.nPoints; i += 7) {
+    const x = graph.points[i * 3], y = graph.points[i * 3 + 1], z = graph.points[i * 3 + 2];
+    diffs.push(y - bmMod.basemapHeightAt(bm, x, z));
+}
+diffs.sort((a, b) => a - b);
+const median = diffs[Math.floor(diffs.length / 2)];
+
+const buckets = bmMod.bucketRoadSegments(graph);
+const cells = {};
+for (const [mx, mz] of [[0, 0], [0, -7], [-8, 0]]) {
+    const cell = bmMod.buildBasemapCell(bm, graph, buckets, mx, mz);
+    const m = cell.meshData;
+    let maxIdx = 0;
+    for (const i of m.indices) if (i > maxIdx) maxIdx = i;
+    let streetVerts = 0;
+    for (let v = 0; v < m.vertexCount; v++) if (Math.abs(m.col[v * 4 + 3] - 0.95) < 0.01) streetVerts++;
+    const c = cell.chunks[0];
+    cells[`${mx}_${mz}`] = {
+        indexCountOk: m.indexCount === m.indices.length && m.indexCount % 3 === 0,
+        indicesInRange: maxIdx < m.vertexCount,
+        finite: m.pos.every(Number.isFinite) && m.norm.every(Number.isFinite),
+        streetVerts,
+        aabbOk: c.min_x <= mx * 1024 && c.max_x >= (mx + 1) * 1024 && c.min_y < c.max_y,
+    };
+}
+process.stdout.write(JSON.stringify({
+    median,
+    cellCount: bmMod.basemapCellKeys(bm).length,
+    outside: bmMod.buildBasemapCell(bm, graph, buckets, 500, 500) === null,
+    cells,
+}));
+"""
+        proc = subprocess.run([node_bin, "--input-type=module", "-e", script], capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 0, f"Node probe failed:\n{proc.stderr}\n{proc.stdout}")
+        data = json.loads(proc.stdout)
+        # road_network.bin points sit ROAD_SURFACE_OFFSET (0.12 m) above the same terrain function
+        self.assertAlmostEqual(data["median"], 0.12, delta=0.1)
+        self.assertGreater(data["cellCount"], 300)
+        self.assertTrue(data["outside"])
+        for key, cell in data["cells"].items():
+            self.assertTrue(cell["indexCountOk"], key)
+            self.assertTrue(cell["indicesInRange"], key)
+            self.assertTrue(cell["finite"], key)
+            self.assertTrue(cell["aabbOk"], key)
+            self.assertGreater(cell["streetVerts"], 100, f"cell {key} should contain streets")
+
+
 if __name__ == "__main__":
     unittest.main()
