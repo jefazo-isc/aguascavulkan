@@ -1729,5 +1729,86 @@ process.stdout.write(JSON.stringify({
             self.assertGreater(cell["streetVerts"], 100, f"cell {key} should contain streets")
 
 
+
+class TestCityBuildings(unittest.TestCase):
+    """Overture building footprints layer (tools/build_city_buildings.py + web/city_basemap.js)."""
+
+    BUILDINGS = os.path.join(ROOT, "models", "city_buildings.bin")
+
+    def setUp(self):
+        if not os.path.isfile(self.BUILDINGS):
+            self.skipTest("models/city_buildings.bin not present")
+
+    def test_cbb1_layout_and_counts(self):
+        import struct
+        with open(self.BUILDINGS, "rb") as f:
+            raw = f.read()
+        magic, n_cells, n_bld, n_pts = struct.unpack_from("<4sIII", raw, 0)
+        self.assertEqual(magic, b"CBB1")
+        self.assertEqual(len(raw), 16 + n_cells * 16 + n_bld * 4 + n_pts * 4)
+        self.assertGreater(n_bld, 300000, "Whole-city Overture extract expected (~325k buildings)")
+        total_b = total_p = 0
+        for i in range(n_cells):
+            _mx, _mz, first_b, count, first_p = struct.unpack_from("<hhIII", raw, 16 + i * 16)
+            self.assertEqual(first_b, total_b)
+            self.assertEqual(first_p, total_p)
+            for b in range(first_b, first_b + count):
+                n, cls, h_dm = struct.unpack_from("<BBH", raw, 16 + n_cells * 16 + b * 4)
+                self.assertTrue(3 <= n <= 24)
+                self.assertTrue(0 <= cls <= 6)
+                self.assertTrue(20 <= h_dm <= 2000)
+                total_p += n
+            total_b += count
+        self.assertEqual(total_b, n_bld)
+        self.assertEqual(total_p, n_pts)
+
+    def test_buildings_extrude_into_valid_meshes(self):
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node is not installed in PATH")
+        script = r"""
+import fs from 'node:fs';
+const bmMod = await import('./web/city_basemap.js');
+const load = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); };
+const bm = bmMod.parseCityBasemap(load('models/city_basemap.bin'));
+const bl = bmMod.parseCityBuildings(load('models/city_buildings.bin'));
+const out = {};
+for (const key of ['0_-2', '-1_0', '0_-7']) {
+    const [mx, mz] = key.split('_').map(Number);
+    const bare = bmMod.buildBasemapCell(bm, null, null, mx, mz, null);
+    const cell = bmMod.buildBasemapCell(bm, null, null, mx, mz, bl);
+    const m = cell.meshData;
+    let maxIdx = 0;
+    for (const i of m.indices) if (i > maxIdx) maxIdx = i;
+    let facade = 0, roof = 0;
+    for (let v = 0; v < m.vertexCount; v++) {
+        const a = m.col[v * 4 + 3];
+        if (Math.abs(a - 1.0) < 1e-3) facade++;
+        if (Math.abs(a - 0.35) < 1e-3) roof++;
+    }
+    out[key] = {
+        buildings: cell.buildingCount,
+        expected: bl.cells.has(key) ? bl.cells.get(key).count : 0,
+        extraVerts: m.vertexCount - bare.meshData.vertexCount,
+        facade, roof,
+        indicesOk: maxIdx < m.vertexCount && m.indexCount % 3 === 0,
+        finite: m.pos.every(Number.isFinite),
+        uvInAtlas: Array.from(m.uv).every((u) => u > -1.001 && u < 1.001),
+    };
+}
+process.stdout.write(JSON.stringify(out));
+"""
+        proc = subprocess.run([node_bin, "--input-type=module", "-e", script], capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 0, f"Node probe failed:\n{proc.stderr}\n{proc.stdout}")
+        for key, cell in json.loads(proc.stdout).items():
+            self.assertGreater(cell["buildings"], 100, key)
+            self.assertEqual(cell["buildings"], cell["expected"], key)
+            self.assertEqual(cell["extraVerts"], cell["facade"] + cell["roof"], key)
+            self.assertGreater(cell["facade"], cell["buildings"] * 12, key)  # >= 3 walls x 4 vertices
+            self.assertTrue(cell["indicesOk"], key)
+            self.assertTrue(cell["finite"], key)
+            self.assertTrue(cell["uvInAtlas"], key)
+
+
 if __name__ == "__main__":
     unittest.main()
