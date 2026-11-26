@@ -311,12 +311,18 @@ class TestWebClientAssets(unittest.TestCase):
             "street_vulkan_core.wasm",
             "WebGPURenderer",
             "WebGL2Renderer",
-            "cull_chunks",
-            "sector_0_0.glb",
-            "submeshes",
-            "buildingIndices",
         ):
             self.assertIn(token, app_js)
+
+        # After the modular refactor, sector streaming and GLB logic moved to dedicated modules
+        with open(os.path.join(WEB_DIR, "sector-manager.js"), "r", encoding="utf-8") as f:
+            sector_mgr_js = f.read()
+        self.assertIn("sector_0_0.glb", sector_mgr_js)
+
+        with open(os.path.join(WEB_DIR, "glb-parser.js"), "r", encoding="utf-8") as f:
+            glb_parser_js = f.read()
+        for token in ("submeshes", "buildingIndices"):
+            self.assertIn(token, glb_parser_js)
 
         with open(os.path.join(WEB_DIR, "index.html"), "r", encoding="utf-8") as f:
             html = f.read()
@@ -399,10 +405,10 @@ class TestWebClientAssets(unittest.TestCase):
 
         node_script = """
 const fs = require('fs');
-const appContent = fs.readFileSync('web/app.js', 'utf-8');
-const m1 = appContent.indexOf('function extractAccessorTypedArray');
-const m2 = appContent.indexOf('function generateFallbackFacadeRGBA');
-const fnCode = appContent.slice(m1, m2);
+// After the modular refactor, GLB parser functions live in web/glb-parser.js
+const parserContent = fs.readFileSync('web/glb-parser.js', 'utf-8');
+// Strip ES module export keywords so vm.runInContext can evaluate the file
+const fnCode = parserContent.replace(/^export\\s+/gm, '');
 
 const vm = require('vm');
 const ctx = vm.createContext({ DataView, Uint8Array, Uint16Array, Uint32Array, Float32Array, TextDecoder, Math });
@@ -1321,7 +1327,7 @@ class TestTercerAnilloExpansion(unittest.TestCase):
         self.assertGreaterEqual(validated, 80, f"Only {validated} sectors validated; expected at least 80 with correct AABB heights")
 
     def test_tercer_anillo_web_waypoints_elevation_and_coords(self):
-        """Verifica que los waypoints de Tercer Anillo en web/app.js apuntan a coordenadas reales y ras del suelo DEM."""
+        """Verifica que los waypoints de Tercer Anillo en web/camera-input.js apuntan a coordenadas reales y ras del suelo DEM."""
         from geo_dem import TerrainElevation, DEFAULT_ORIGIN_LAT, DEFAULT_ORIGIN_LON
 
         terrain = TerrainElevation(
@@ -1329,12 +1335,12 @@ class TestTercerAnilloExpansion(unittest.TestCase):
             origin_lat=DEFAULT_ORIGIN_LAT, origin_lon=DEFAULT_ORIGIN_LON
         )
 
-        app_js_path = os.path.join(ROOT, "web", "app.js")
-        with open(app_js_path, "r", encoding="utf-8") as f:
+        cam_input_path = os.path.join(ROOT, "web", "camera-input.js")
+        with open(cam_input_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        m = re.search(r"const TERCER_ANILLO_WAYPOINTS\s*=\s*\[(.*?)\];", content, re.DOTALL)
-        self.assertIsNotNone(m, "TERCER_ANILLO_WAYPOINTS must exist in web/app.js")
+        m = re.search(r"(?:export\s+)?const TERCER_ANILLO_WAYPOINTS\s*=\s*\[(.*?)\];", content, re.DOTALL)
+        self.assertIsNotNone(m, "TERCER_ANILLO_WAYPOINTS must exist in web/camera-input.js")
         wp_block = m.group(1)
 
         # Parse waypoints objects
@@ -1399,13 +1405,13 @@ class TestTercerAnilloExpansion(unittest.TestCase):
         self.assertGreaterEqual(found, 30, f"Only {found}/32 Primer Anillo sectors found in manifest")
 
     def test_primer_anillo_web_waypoints(self):
-        """Verifica que PRIMER_ANILLO_WAYPOINTS existen en web/app.js con 4 puntos cardinales."""
-        app_js_path = os.path.join(ROOT, "web", "app.js")
-        with open(app_js_path, "r", encoding="utf-8") as f:
+        """Verifica que PRIMER_ANILLO_WAYPOINTS existen en web/camera-input.js con 4 puntos cardinales."""
+        cam_input_path = os.path.join(ROOT, "web", "camera-input.js")
+        with open(cam_input_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        m = re.search(r"const PRIMER_ANILLO_WAYPOINTS\s*=\s*\[(.*?)\];", content, re.DOTALL)
-        self.assertIsNotNone(m, "PRIMER_ANILLO_WAYPOINTS must exist in web/app.js")
+        m = re.search(r"(?:export\s+)?const PRIMER_ANILLO_WAYPOINTS\s*=\s*\[(.*?)\];", content, re.DOTALL)
+        self.assertIsNotNone(m, "PRIMER_ANILLO_WAYPOINTS must exist in web/camera-input.js")
         wp_block = m.group(1)
 
         wp_matches = re.findall(r"\{\s*name:\s*'([^']+)',\s*x:\s*([-\d.]+),\s*y:\s*([-\d.]+),\s*z:\s*([-\d.]+)", wp_block)
