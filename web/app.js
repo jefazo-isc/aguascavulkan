@@ -10,7 +10,7 @@
 import { WebGPURenderer } from './renderer_webgpu.js';
 import { WebGL2Renderer } from './renderer_webgl2.js';
 import { CAR_TYPES, CAR_INSTANCE_FLOATS, TrafficSimulation, parseRoadGraph, stageCorridorInstances } from './traffic_sim.js';
-import { BASEMAP_MACRO_SIZE, parseCityBasemap, basemapRoadHeight, bucketRoadSegments, buildBasemapCell, basemapCellKeys } from './city_basemap.js';
+import { BASEMAP_MACRO_SIZE, parseCityBasemap, parseCityBuildings, basemapRoadHeight, bucketRoadSegments, buildBasemapCell, basemapCellKeys } from './city_basemap.js';
 
 // Exact initial camera spawn in front of Rolcar Paseo de la Cruz (src/math_camera.c)
 const INITIAL_CAMERA = {
@@ -687,6 +687,20 @@ async function loadCityBasemap(basePrefix) {
     return null;
 }
 
+async function loadCityBuildings(basePrefix) {
+    const candidates = [`${basePrefix}models/city_buildings.bin`, '../models/city_buildings.bin', './models/city_buildings.bin'];
+    for (const url of candidates) {
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) continue;
+            return parseCityBuildings(await resp.arrayBuffer());
+        } catch (err) {
+            console.warn(`[Buildings] ${url}:`, err.message);
+        }
+    }
+    return null;
+}
+
 async function loadRoadGraph(basePrefix) {
     const candidates = [`${basePrefix}models/road_network.bin`, '../models/road_network.bin', './models/road_network.bin'];
     for (const url of candidates) {
@@ -1119,9 +1133,14 @@ async function main() {
 
     // City basemap: low-detail terrain + road network for every 1024 m cell without a GLB sector
     // (renderer keys `lod_<mx>_<mz>`). Cells are built progressively, nearest to the camera first.
+    // Overture building footprints are extruded only within BUILDING_LOAD_RADIUS of the camera
+    // (all 325k buildings would be ~8M vertices); BUILDING_DROP_RADIUS adds hysteresis.
+    const BUILDING_LOAD_RADIUS = 2300.0;
+    const BUILDING_DROP_RADIUS = 3000.0;
     let cityBasemap = null;
+    let cityBuildings = null;
     let roadBuckets = null;
-    const lodCells = new Map(); // `${mx}_${mz}` -> { aabbData }
+    const lodCells = new Map(); // `${mx}_${mz}` -> { aabbData, withBuildings }
     const lodBuildQueue = [];
     let lodDirty = true;
     let lodKeys = [];
@@ -1138,28 +1157,50 @@ async function main() {
     }
 
     function queueBasemapCell(key) {
-        if (!cityBasemap || lodCells.has(key) || sectorCache.has(key) || lodBuildQueue.includes(key)) return;
+        if (!cityBasemap || sectorCache.has(key) || lodBuildQueue.includes(key)) return;
         lodBuildQueue.push(key);
+    }
+
+    function cellDistance(key, camX, camZ) {
+        const [mx, mz] = key.split('_').map(Number);
+        const x0 = mx * BASEMAP_MACRO_SIZE;
+        const z0 = mz * BASEMAP_MACRO_SIZE;
+        const dx = Math.max(x0 - camX, 0, camX - (x0 + BASEMAP_MACRO_SIZE));
+        const dz = Math.max(z0 - camZ, 0, camZ - (z0 + BASEMAP_MACRO_SIZE));
+        return Math.hypot(dx, dz);
+    }
+
+    function cellWantsBuildings(key, camX, camZ) {
+        if (!cityBuildings || !cityBuildings.cells.has(key)) return false;
+        const current = lodCells.get(key);
+        const radius = (current && current.withBuildings) ? BUILDING_DROP_RADIUS : BUILDING_LOAD_RADIUS;
+        return cellDistance(key, camX, camZ) < radius;
+    }
+
+    // Queue cells whose building detail must change as the camera moves
+    function refreshBasemapBuildings(camX, camZ) {
+        for (const [key, cell] of lodCells.entries()) {
+            if (cell.withBuildings !== cellWantsBuildings(key, camX, camZ)) queueBasemapCell(key);
+        }
     }
 
     function buildQueuedBasemapCells(camX, camZ, budgetMs) {
         if (!cityBasemap || lodBuildQueue.length === 0) return;
-        lodBuildQueue.sort((a, b) => {
-            const [ax, az] = a.split('_').map(Number);
-            const [bx, bz] = b.split('_').map(Number);
-            return Math.hypot((ax + 0.5) * BASEMAP_MACRO_SIZE - camX, (az + 0.5) * BASEMAP_MACRO_SIZE - camZ) -
-                   Math.hypot((bx + 0.5) * BASEMAP_MACRO_SIZE - camX, (bz + 0.5) * BASEMAP_MACRO_SIZE - camZ);
-        });
+        lodBuildQueue.sort((a, b) => cellDistance(a, camX, camZ) - cellDistance(b, camX, camZ));
         const t0 = performance.now();
         while (lodBuildQueue.length > 0 && performance.now() - t0 < budgetMs) {
             const key = lodBuildQueue.shift();
-            if (sectorCache.has(key) || lodCells.has(key)) continue;
+            if (sectorCache.has(key)) continue;
+            const withBuildings = cellWantsBuildings(key, camX, camZ);
+            const current = lodCells.get(key);
+            if (current && current.withBuildings === withBuildings) continue;
             const [mx, mz] = key.split('_').map(Number);
-            const cell = buildBasemapCell(cityBasemap, trafficGraph, roadBuckets, mx, mz);
+            const cell = buildBasemapCell(cityBasemap, trafficGraph, roadBuckets, mx, mz,
+                withBuildings ? cityBuildings : null);
             if (!cell) continue;
-            renderer.uploadSector(`lod_${key}`, cell.meshData, cell.chunks);
+            renderer.uploadSector(`lod_${key}`, cell.meshData, cell.chunks); // replaces any previous mesh
             const c = cell.chunks[0];
-            lodCells.set(key, { aabbData: [c.min_x, c.min_y, c.min_z, c.max_x, c.max_y, c.max_z] });
+            lodCells.set(key, { aabbData: [c.min_x, c.min_y, c.min_z, c.max_x, c.max_y, c.max_z], withBuildings });
             lodDirty = true;
         }
     }
@@ -1170,8 +1211,10 @@ async function main() {
     const fallbackInstances = new Float32Array(state.carCount * CAR_INSTANCE_FLOATS);
     const fallbackTypeCounts = new Uint32Array(CAR_TYPES.length);
     const fallbackTypeOffsets = new Uint32Array(CAR_TYPES.length);
-    Promise.all([loadRoadGraph(assetPrefix), loadCityBasemap(assetPrefix)]).then(([graph, basemap]) => {
+    Promise.all([loadRoadGraph(assetPrefix), loadCityBasemap(assetPrefix), loadCityBuildings(assetPrefix)]).then(([graph, basemap, buildings]) => {
         trafficGraph = graph;
+        cityBuildings = buildings;
+        if (!buildings) console.warn('[Buildings] city_buildings.bin unavailable; basemap without buildings');
         if (basemap) {
             cityBasemap = basemap;
             roadBuckets = graph ? bucketRoadSegments(graph) : null;
@@ -1907,6 +1950,7 @@ async function main() {
         if (streamCheckTimer >= 0.5) {
             streamCheckTimer = 0;
             maybeStreamNearbySectors(camX, camZ);
+            refreshBasemapBuildings(camX, camZ);
         }
 
         // Update ISO 25010:2023 Telemetry HUD
