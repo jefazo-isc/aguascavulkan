@@ -8,7 +8,7 @@
  *  - createCameraInput(canvas, state, wasm, f32Mem, callbacks) → { keysDown, touchMove }
  */
 
-import { clamp, INITIAL_CAMERA, TIME_PRESETS, TRAFFIC_PHASE_LABELS, MEM_POS_PTR, MEM_SIM_TIME_PTR } from './wasm-core.js';
+import { clamp, INITIAL_CAMERA, TIME_PRESETS, TRAFFIC_PHASE_LABELS, MEM_POS_PTR, MEM_SIM_TIME_PTR, MEM_CARS_PTR } from './wasm-core.js';
 
 // ---------------------------------------------------------------------------
 // Waypoint Constants
@@ -204,13 +204,11 @@ export function createCameraInput(canvas, state, wasm, f32Mem, callbacks) {
     // -----------------------------------------------------------------------
     // Pause-menu action buttons
     // -----------------------------------------------------------------------
-    const MEM_CARS_PTR_LOCAL = 0x9000; // mirrors wasm-core.js MEM_CARS_PTR (not exported)
-
     document.getElementById('pause-wasm-test')?.addEventListener('click', () => {
         try {
             const v    = wasm.get_version();
             const tick = wasm.traffic_tick(MEM_SIM_TIME_PTR, 0.1);
-            const carsUpdated = wasm.update_vehicle_stream ? wasm.update_vehicle_stream(MEM_CARS_PTR_LOCAL, state.carCount, 0.016, state.simSpeed) : 0;
+            const carsUpdated = wasm.update_vehicle_stream ? wasm.update_vehicle_stream(MEM_CARS_PTR, state.carCount, 0.016, state.simSpeed) : 0;
             logPause(`✅ Kernel WASM OK: v${v}, Fase Semáforo=${tick}, Vehículos Activos=${carsUpdated}`);
             showToast('Prueba WASM: Superada con éxito');
         } catch (err) {
@@ -221,8 +219,9 @@ export function createCameraInput(canvas, state, wasm, f32Mem, callbacks) {
     document.getElementById('pause-toggle-cars')?.addEventListener('click', () => {
         state.carsEnabled = !state.carsEnabled;
         const elCars = document.getElementById('hud-cars');
+        const activeCount = callbacks.getActiveCarCount ? callbacks.getActiveCarCount() : state.carCount;
         if (elCars) {
-            elCars.textContent = state.carsEnabled ? `${state.carCount} activos` : 'Pausado';
+            elCars.textContent = state.carsEnabled ? `${activeCount} activos` : 'Pausado';
             elCars.className   = state.carsEnabled ? 'metric-good' : 'metric-warn';
         }
         logPause(`🚗 Simulación de tráfico: ${state.carsEnabled ? 'ACTIVADA' : 'DESACTIVADA'}`);

@@ -120,12 +120,13 @@ export class SectorManager {
      * @param {object} loaderEls       — { loaderTextEl, loaderBarEl }
      * @param {object} backendInfo     — { backend: string }
      */
-    constructor(renderer, f32Mem, loaderEls, backendInfo) {
+    constructor(renderer, f32Mem, loaderEls, backendInfo, callbacks = {}) {
         this._renderer   = renderer;
         this._f32Mem     = f32Mem;
         this._loaderTextEl = loaderEls.loaderTextEl;
         this._loaderBarEl  = loaderEls.loaderBarEl;
         this._backendName  = backendInfo.backend;
+        this._callbacks    = callbacks;
 
         /** @type {Map<string, {entry, aabbData, chunkCount, cx, cz, lastUsed}>} */
         this.sectorCache       = new Map();
@@ -153,6 +154,7 @@ export class SectorManager {
         this._renderer.unloadSector(key);
         this.sectorCache.delete(key);
         this.cullFlagsBySector.delete(key);
+        this._callbacks.onSectorUnloaded?.(key);
     }
 
     // -----------------------------------------------------------------------
@@ -224,6 +226,7 @@ export class SectorManager {
 
             const cx = (entry.mx + 0.5) * macroSize;
             const cz = (entry.mz + 0.5) * macroSize;
+            this._callbacks.onSectorLoaded?.(key);
             this.sectorCache.set(key, {
                 entry,
                 aabbData,

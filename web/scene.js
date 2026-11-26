@@ -6,6 +6,8 @@
 import { clamp, linearToSrgbChannel } from './wasm-core.js';
 import { parseGLB } from './glb-parser.js';
 import { buildFallbackVehicleMesh } from './glb-builder.js';
+import { parseCityBasemap, parseCityBuildings } from './city_basemap.js';
+import { parseRoadGraph } from './traffic_sim.js';
 
 // ----------------------------------------------------------------------------
 // Texturas procedurales fallback (coinciden con src/vulkan_texture.c)
@@ -80,9 +82,9 @@ export async function loadTextureAtlasWithFallback() {
 // ----------------------------------------------------------------------------
 // Carga del modelo de vehículo con fallback procedural
 // ----------------------------------------------------------------------------
-export async function loadVehicleModelWithFallback(basePrefix) {
+export async function loadVehicleModelWithFallback(basePrefix, typeName = 'sedan') {
     try {
-        const resp = await fetch(`${basePrefix}models/cars/car_sedan.glb`);
+        const resp = await fetch(`${basePrefix}models/cars/car_${typeName}.glb`);
         if (resp.ok) {
             const buf    = await resp.arrayBuffer();
             const parsed = parseGLB(buf);
@@ -92,6 +94,48 @@ export async function loadVehicleModelWithFallback(basePrefix) {
         // Usar fallback procedural
     }
     return buildFallbackVehicleMesh();
+}
+
+export async function loadCityBasemap(basePrefix) {
+    const candidates = [`${basePrefix}models/city_basemap.bin`, '../models/city_basemap.bin', './models/city_basemap.bin'];
+    for (const url of candidates) {
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) continue;
+            return parseCityBasemap(await resp.arrayBuffer());
+        } catch (err) {
+            console.warn(`[Basemap] ${url}:`, err.message);
+        }
+    }
+    return null;
+}
+
+export async function loadCityBuildings(basePrefix) {
+    const candidates = [`${basePrefix}models/city_buildings.bin`, '../models/city_buildings.bin', './models/city_buildings.bin'];
+    for (const url of candidates) {
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) continue;
+            return parseCityBuildings(await resp.arrayBuffer());
+        } catch (err) {
+            console.warn(`[Buildings] ${url}:`, err.message);
+        }
+    }
+    return null;
+}
+
+export async function loadRoadGraph(basePrefix) {
+    const candidates = [`${basePrefix}models/road_network.bin`, '../models/road_network.bin', './models/road_network.bin'];
+    for (const url of candidates) {
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) continue;
+            return parseRoadGraph(await resp.arrayBuffer());
+        } catch (err) {
+            console.warn(`[Traffic] road graph ${url}:`, err.message);
+        }
+    }
+    return null;
 }
 
 // ----------------------------------------------------------------------------
