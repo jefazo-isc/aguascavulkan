@@ -998,6 +998,10 @@ async function main() {
         }
     }
 
+    // Declared early so resetCamera→maybeStreamNearbySectors can safely read it
+    // before resolveSectorManifest() runs (initially null = no streaming yet).
+    let manifestInfo = null;
+
     function resetCamera() {
         const posBase = MEM_POS_PTR >> 2;
         f32Mem[posBase + 0] = INITIAL_CAMERA.pos[0];
@@ -1037,7 +1041,7 @@ async function main() {
     const cullFlagsBySector = new Map(); // sectorKey -> Uint8Array(chunkCount)
     const loadingSectors = new Set();
     const missingSectors = new Set();
-    let manifestInfo = await resolveSectorManifest();
+    manifestInfo = await resolveSectorManifest();
 
     loadVehicleModelWithFallback(manifestInfo ? manifestInfo.basePrefix : '../').then((vMesh) => {
         if (renderer && renderer.uploadVehicleModel) {
