@@ -32,6 +32,7 @@ const SIGNAL_LOOKAHEAD = 35.0;
 const SPAWN_MIN_DIST = 40.0;
 const EDGE_GRID_CELL = 128.0;
 const ROAD_Y_OFFSET = 0.05; // street mesh sits ~3 cm above the road graph polyline
+export const STOPPED_SPEED_THRESHOLD_MPS = 0.1;
 
 // ----------------------------------------------------------------------------
 // RGP1 parser (tools/generate_road_graph.py / include/road_graph.h)
@@ -463,6 +464,27 @@ export class TrafficSimulation {
         this.activeCount = alive;
         this._stageInstances();
         return alive;
+    }
+
+    // Compute telemetry from the current car state instead of activeCount,
+    // which is updated before cars can be deactivated at a dead end.
+    getStats() {
+        let activeCount = 0;
+        let stoppedCount = 0;
+        let speedSumMps = 0.0;
+
+        for (const car of this.cars) {
+            if (!car.alive) continue;
+            activeCount++;
+            speedSumMps += car.v;
+            if (car.v < STOPPED_SPEED_THRESHOLD_MPS) stoppedCount++;
+        }
+
+        return {
+            activeCount,
+            stoppedCount,
+            averageSpeedKmh: activeCount > 0 ? (speedSumMps / activeCount) * 3.6 : 0.0,
+        };
     }
 
     // Pack alive cars grouped by type (one instanced draw per type), as car_system_stage_instances()
