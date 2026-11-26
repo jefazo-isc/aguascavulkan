@@ -150,7 +150,7 @@ static int ensure_sync_init(SectorSystem *ss) {
 
 /* Extrae un campo flotante del manifiesto JSON o devuelve el valor por defecto. */
 static float parse_manifest_float(const char *json, const char *key, float fallback) {
-    char *p = strstr(json, key);
+    const char *p = strstr(json, key);
     if (!p) return fallback;
     p = strchr(p, ':');
     float val = p ? (float)atof(p + 1) : fallback;
