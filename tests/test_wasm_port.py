@@ -1471,5 +1471,161 @@ class TestTercerAnilloExpansion(unittest.TestCase):
 
 
 
+class TestWebTrafficSimulation(unittest.TestCase):
+    """Road-graph vehicle simulation (web/traffic_sim.js) and instanced vehicle rendering."""
+
+    def _run_node(self, script: str) -> dict:
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node is not installed in PATH")
+        proc = subprocess.run(
+            [node_bin, "--input-type=module", "-e", script],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, f"Node probe failed:\n{proc.stderr}\n{proc.stdout}")
+        return json.loads(proc.stdout)
+
+    def test_cars_follow_road_graph_inside_loaded_sector(self):
+        """Cars must drive on road_network.bin polylines at street height, spread over many streets."""
+        road_bin = os.path.join(ROOT, "models", "road_network.bin")
+        if not os.path.isfile(road_bin):
+            self.skipTest("models/road_network.bin not present")
+        data = self._run_node(r"""
+import fs from 'node:fs';
+const { TrafficSimulation, parseRoadGraph, CAR_INSTANCE_FLOATS } = await import('./web/traffic_sim.js');
+const buf = fs.readFileSync('models/road_network.bin');
+const graph = parseRoadGraph(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+
+// Deterministic LCG so the probe is reproducible
+let seed = 12345;
+const rng = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+const sim = new TrafficSimulation(graph, 50, rng);
+sim.isDrivable = (x, z) => x >= 0 && x < 1024 && z >= 0 && z < 1024; // only sector (0, 0)
+
+const cam = [954.4, 793.1];
+sim.update(1 / 30, cam[0], cam[1], 0);
+const start = sim.cars.map(c => [c.x, c.z]);
+const edgesSeen = new Set();
+let phase = 0;
+for (let i = 0; i < 900; i++) {
+    if (i % 240 === 0) phase = (phase + 1) % 4;
+    sim.update(1 / 30, cam[0], cam[1], phase);
+    for (const c of sim.cars) if (c.alive) edgesSeen.add(c.edge);
+}
+
+let maxRoadDist = 0;
+let maxHeightErr = 0;
+let outside = 0;
+let moved = 0;
+const sample = { x: 0, y: 0, z: 0, fx: 0, fz: 1 };
+sim.cars.forEach((c, i) => {
+    if (!c.alive) return;
+    sim._polylineSample(c.edge, c.t, c.dir, sample);
+    maxRoadDist = Math.max(maxRoadDist, Math.hypot(c.x - sample.x, c.z - sample.z));
+    maxHeightErr = Math.max(maxHeightErr, Math.abs(c.y - sample.y - 0.05));
+    if (!(c.x >= -20 && c.x < 1044 && c.z >= -20 && c.z < 1044)) outside++;
+    if (Math.hypot(c.x - start[i][0], c.z - start[i][1]) > 1.0) moved++;
+});
+
+const typeTotal = Array.from(sim.typeCounts).reduce((a, b) => a + b, 0);
+let instOk = true;
+for (let i = 0; i < typeTotal; i++) {
+    const o = i * CAR_INSTANCE_FLOATS;
+    if (sim.instances[o + 15] !== 1 || sim.instances[o + 19] !== 1) instOk = false;
+}
+
+process.stdout.write(JSON.stringify({
+    nodes: graph.nNodes,
+    edges: graph.nEdges,
+    active: sim.activeCount,
+    edgesSeen: edgesSeen.size,
+    maxRoadDist, maxHeightErr, outside, moved, typeTotal, instOk,
+    stopX: [0, 1, 2, 3].map(p => TrafficSimulation.lightIsStop(p, 1, 0)),
+    stopZ: [0, 1, 2, 3].map(p => TrafficSimulation.lightIsStop(p, 0, 1)),
+}));
+""")
+        self.assertGreater(data["nodes"], 1000)
+        self.assertGreater(data["edges"], 1000)
+        self.assertGreaterEqual(data["active"], 40, "Most cars should be spawned on nearby streets")
+        self.assertGreaterEqual(data["edgesSeen"], 40, "Cars must spread over many streets, not one corridor")
+        # Lane offset is at most a few lanes from the centerline
+        self.assertLess(data["maxRoadDist"], 13.0)
+        self.assertLess(data["maxHeightErr"], 0.01, "Cars must sit on the road polyline height")
+        self.assertEqual(data["outside"], 0, "Cars must stay inside the loaded sector")
+        self.assertGreater(data["moved"], 10)
+        self.assertEqual(data["typeTotal"], data["active"])
+        self.assertTrue(data["instOk"])
+        # Group 0 (roads along X) is green only in phase 0, group 1 (along Z) only in phase 2
+        self.assertEqual(data["stopX"], [False, True, True, True])
+        self.assertEqual(data["stopZ"], [True, True, False, True])
+
+    def test_webgpu_draws_instanced_vehicles(self):
+        """WebGPU renderer must draw one instanced call per vehicle type with the vehicle pipeline."""
+        data = self._run_node(r"""
+globalThis.GPUBufferUsage = { VERTEX: 1, INDEX: 2, UNIFORM: 4, COPY_DST: 8 };
+globalThis.GPUShaderStage = { VERTEX: 1, FRAGMENT: 2 };
+globalThis.GPUTextureUsage = { TEXTURE_BINDING: 1, COPY_DST: 2, RENDER_ATTACHMENT: 4 };
+const { WebGPURenderer } = await import('./web/renderer_webgpu.js');
+
+const draws = [];
+const device = {
+    createBuffer: (d) => ({ size: d.size, destroy() {} }),
+    queue: { writeBuffer() {}, submit() {} },
+};
+const pass = {
+    pipeline: null,
+    setPipeline(p) { this.pipeline = p; }, setBindGroup() {}, setVertexBuffer() {}, setIndexBuffer() {},
+    drawIndexed(count, instances, firstIndex, baseVertex, firstInstance) {
+        draws.push({ count, instances, firstInstance, pipeline: this.pipeline });
+    },
+    end() {},
+};
+device.createCommandEncoder = () => ({ beginRenderPass: () => pass, finish: () => ({}) });
+
+const r = new WebGPURenderer();
+r.device = device;
+r.pipeline = 'PIPELINE_MAIN';
+r.vehiclePipeline = 'PIPELINE_VEHICLE';
+r.bindGroup = {};
+r.uniformBuffer = { size: 2272 };
+r.canvas = { width: 800, height: 600 };
+r.context = { getCurrentTexture: () => ({ createView: () => ({}) }) };
+r.depthTexture = { createView: () => ({}), destroy() {} };
+r.depthWidth = 800; r.depthHeight = 600;
+
+const mesh = {
+    pos: new Float32Array(12), norm: new Float32Array(12), uv: new Float32Array(8),
+    col: new Float32Array(16), em: new Float32Array(4),
+    indices: new Uint16Array([0, 1, 2, 0, 2, 3]), indexFormat: 'uint16', indexCount: 6, vertexCount: 4,
+};
+r.uploadVehicleModel(mesh, 0);
+r.uploadVehicleModel(mesh, 2);
+const stats = r.render({
+    uniformBufferData: new Float32Array(568),
+    clearColor: [0, 0, 0],
+    vehicles: {
+        instances: new Float32Array(30 * 24),
+        typeCounts: new Uint32Array([20, 0, 10, 0, 0, 0]),
+        typeOffsets: new Uint32Array([0, 20, 20, 30, 30, 30]),
+    },
+});
+process.stdout.write(JSON.stringify({ draws, drawCalls: stats.drawCalls }));
+""")
+        self.assertEqual(data["drawCalls"], 2)
+        self.assertEqual([d["pipeline"] for d in data["draws"]], ["PIPELINE_VEHICLE", "PIPELINE_VEHICLE"])
+        self.assertEqual([(d["instances"], d["firstInstance"]) for d in data["draws"]], [(20, 0), (10, 20)])
+
+    def test_vehicle_shader_entry_points_present(self):
+        with open(os.path.join(WEB_DIR, "shaders.wgsl"), "r", encoding="utf-8") as f:
+            wgsl = f.read()
+        self.assertIn("fn vs_vehicle", wgsl)
+        with open(os.path.join(WEB_DIR, "renderer_webgl2.js"), "r", encoding="utf-8") as f:
+            wgl = f.read()
+        self.assertIn("VS_VEHICLE_GLSL300", wgl)
+        self.assertIn("drawElementsInstanced", wgl)
+
+
 if __name__ == "__main__":
     unittest.main()
