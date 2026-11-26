@@ -177,6 +177,23 @@ jobs:
           fi
           touch _site/.nojekyll
 
+      - name: Inject GitHub Releases CDN base URL into sectors.json
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('_site/models/sectors.json')
+          if p.exists():
+              d = json.loads(p.read_text(encoding='utf-8'))
+              d['external_base_url'] = (
+                  'https://github.com/jefazo-isc/aguascavulkan'
+                  '/releases/download/sectors-v1/'
+              )
+              p.write_text(json.dumps(d, separators=(',', ':')), encoding='utf-8')
+              print(f"[CI] external_base_url inyectado: {d['external_base_url']}")
+          else:
+              print('[CI] sectors.json no encontrado, omitiendo inyección CDN')
+          PY
+
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:

@@ -38,7 +38,12 @@ export async function resolveSectorManifest() {
             if (!resp.ok) continue;
             const data = await resp.json();
             if (data && Array.isArray(data.sectors) && data.sectors.length > 0) {
-                return { manifest: data, basePrefix: cand.prefix, source: cand.url };
+                // Si el manifest (inyectado por CI) incluye external_base_url, usarla
+                // como prefijo para los GLBs externos (GitHub Releases CDN con CORS nativo).
+                // Fallback seguro: si la URL externa no responde, el streaming LRU
+                // simplemente marca el sector como _missingSectors y muestra el mapa base.
+                const prefix = data.external_base_url || cand.prefix;
+                return { manifest: data, basePrefix: prefix, source: cand.url };
             }
         } catch (_err) {
             // Try next candidate
