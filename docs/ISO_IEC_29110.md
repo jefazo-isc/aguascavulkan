@@ -39,7 +39,7 @@ Cada integrante documenta **su propio tema**, el mismo que desarrolla en el Spri
 | Diseño de Software (renderizado y streaming) | SI.3 | @jefazo-isc | [#20](https://github.com/jefazo-isc/aguascavulkan/issues/20) |
 | Casos y Reporte de Pruebas (tráfico) | SI.4 / SI.5 | @Maizestream818 | [#21](https://github.com/jefazo-isc/aguascavulkan/issues/21) |
 | Manual de Usuario (demo web) | SI.5 | @RichardPrograma | [#22](https://github.com/jefazo-isc/aguascavulkan/issues/22) |
-| Configuración del Software y liberación | SI.6 | @MiguelAngelBatres | [#23](https://github.com/jefazo-isc/aguascavulkan/issues/23) |
+| Configuración del Software y liberación | SI.6 | @Maizestream818 | [#23](https://github.com/jefazo-isc/aguascavulkan/issues/23) |
 | Minutas y retrospectiva final | PM.4 | @MiguelAngelBatres | [#24](https://github.com/jefazo-isc/aguascavulkan/issues/24) |
 
 ## Historia del proceso
