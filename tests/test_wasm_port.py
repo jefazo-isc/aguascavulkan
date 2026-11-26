@@ -792,6 +792,10 @@ class MockGL2 {
     drawElements(mode, count, type, offset) {
         this.draws.push({ mode, count, type, offset, program: this.activeProgram, vao: this.activeVao });
     }
+    vertexAttribDivisor() {}
+    drawElementsInstanced(mode, count, type, offset, instances) {
+        this.draws.push({ mode, count, type, offset, instances, program: this.activeProgram, vao: this.activeVao });
+    }
     getExtension() { return null; } getParameter() { return 'MockWebGL2'; }
 }
 
@@ -914,29 +918,33 @@ const multiOk = (
     mockGl.draws[1].program === renderer.buildingProgram && mockGl.draws[1].count === 3
 );
 
-// 7. Vehicle model upload and dynamic car rendering
-renderer.uploadVehicleModel({
+// 7. Vehicle model upload and instanced car rendering (one draw per vehicle type)
+const carMesh = {
     pos: new Float32Array(18), norm: new Float32Array(18), uv: new Float32Array(12),
     col: new Float32Array(24), em: new Float32Array(6),
     indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
     indexCount: 6, vertexCount: 4, indexFormat: 'uint16'
-});
-const fakeCarsMem = new Float32Array(50 * 6);
-for (let i = 0; i < 50; i++) {
-    fakeCarsMem[i * 6 + 0] = 500.0 + i;
-    fakeCarsMem[i * 6 + 1] = 8.8;
-    fakeCarsMem[i * 6 + 2] = 795.5;
-    fakeCarsMem[i * 6 + 3] = 90.0;
-}
+};
+renderer.uploadVehicleModel(carMesh, 0);
+renderer.uploadVehicleModel(carMesh, 5);
 mockGl.draws = [];
 renderer.render({
     uniformBufferData: new Float32Array(568),
     clearColor: [0, 0, 0],
     cullingEnabled: false,
     renderMode: 'all',
-    cars: { ptr: 0, count: 50, memory: fakeCarsMem }
+    vehicles: {
+        instances: new Float32Array(50 * 24),
+        typeCounts: new Uint32Array([45, 0, 0, 0, 0, 5]),
+        typeOffsets: new Uint32Array([0, 45, 45, 45, 45, 45]),
+    }
 });
-const vehicleOk = (mockGl.draws.length === 52); // 2 submeshes + 50 cars
+const carDraws = mockGl.draws.slice(2);
+const vehicleOk = (
+    mockGl.draws.length === 4 && // 2 submeshes + 2 instanced vehicle types
+    carDraws.every(d => d.program === renderer.vehicleProgram) &&
+    carDraws[0].instances === 45 && carDraws[1].instances === 5
+);
 
 process.stdout.write(JSON.stringify({
     hasBuildingProgram,
@@ -1466,6 +1474,346 @@ class TestTercerAnilloExpansion(unittest.TestCase):
                 h1 = terrain.get_real_topography(float(x), bz + 0.0001)
                 self.assertAlmostEqual(h0, h1, delta=0.001,
                                        msg=f"Seam detected at Z boundary {bz} at x={x}: {h0} vs {h1}")
+
+
+
+class TestWebTrafficSimulation(unittest.TestCase):
+    """Road-graph vehicle simulation (web/traffic_sim.js) and instanced vehicle rendering."""
+
+    def _run_node(self, script: str) -> dict:
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node is not installed in PATH")
+        proc = subprocess.run(
+            [node_bin, "--input-type=module", "-e", script],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, f"Node probe failed:\n{proc.stderr}\n{proc.stdout}")
+        return json.loads(proc.stdout)
+
+    def test_cars_follow_road_graph_inside_loaded_sector(self):
+        """Cars must drive on road_network.bin polylines at street height, spread over many streets."""
+        road_bin = os.path.join(ROOT, "models", "road_network.bin")
+        if not os.path.isfile(road_bin):
+            self.skipTest("models/road_network.bin not present")
+        data = self._run_node(r"""
+import fs from 'node:fs';
+const { TrafficSimulation, parseRoadGraph, CAR_INSTANCE_FLOATS } = await import('./web/traffic_sim.js');
+const buf = fs.readFileSync('models/road_network.bin');
+const graph = parseRoadGraph(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+
+// Deterministic LCG so the probe is reproducible
+let seed = 12345;
+const rng = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+const sim = new TrafficSimulation(graph, 50, rng);
+sim.isDrivable = (x, z) => x >= 0 && x < 1024 && z >= 0 && z < 1024; // only sector (0, 0)
+
+const cam = [954.4, 793.1];
+sim.update(1 / 30, cam[0], cam[1], 0);
+const start = sim.cars.map(c => [c.x, c.z]);
+const edgesSeen = new Set();
+let phase = 0;
+for (let i = 0; i < 900; i++) {
+    if (i % 240 === 0) phase = (phase + 1) % 4;
+    sim.update(1 / 30, cam[0], cam[1], phase);
+    for (const c of sim.cars) if (c.alive) edgesSeen.add(c.edge);
+}
+
+let maxRoadDist = 0;
+let maxHeightErr = 0;
+let outside = 0;
+let moved = 0;
+const sample = { x: 0, y: 0, z: 0, fx: 0, fz: 1 };
+sim.cars.forEach((c, i) => {
+    if (!c.alive) return;
+    sim._polylineSample(c.edge, c.t, c.dir, sample);
+    maxRoadDist = Math.max(maxRoadDist, Math.hypot(c.x - sample.x, c.z - sample.z));
+    maxHeightErr = Math.max(maxHeightErr, Math.abs(c.y - sample.y - 0.05));
+    if (!(c.x >= -20 && c.x < 1044 && c.z >= -20 && c.z < 1044)) outside++;
+    if (Math.hypot(c.x - start[i][0], c.z - start[i][1]) > 1.0) moved++;
+});
+
+const typeTotal = Array.from(sim.typeCounts).reduce((a, b) => a + b, 0);
+let instOk = true;
+for (let i = 0; i < typeTotal; i++) {
+    const o = i * CAR_INSTANCE_FLOATS;
+    if (sim.instances[o + 15] !== 1 || sim.instances[o + 19] !== 1) instOk = false;
+}
+
+process.stdout.write(JSON.stringify({
+    nodes: graph.nNodes,
+    edges: graph.nEdges,
+    active: sim.activeCount,
+    edgesSeen: edgesSeen.size,
+    maxRoadDist, maxHeightErr, outside, moved, typeTotal, instOk,
+    stopX: [0, 1, 2, 3].map(p => TrafficSimulation.lightIsStop(p, 1, 0)),
+    stopZ: [0, 1, 2, 3].map(p => TrafficSimulation.lightIsStop(p, 0, 1)),
+}));
+""")
+        self.assertGreater(data["nodes"], 1000)
+        self.assertGreater(data["edges"], 1000)
+        self.assertGreaterEqual(data["active"], 40, "Most cars should be spawned on nearby streets")
+        self.assertGreaterEqual(data["edgesSeen"], 40, "Cars must spread over many streets, not one corridor")
+        # Lane offset is at most a few lanes from the centerline
+        self.assertLess(data["maxRoadDist"], 13.0)
+        self.assertLess(data["maxHeightErr"], 0.01, "Cars must sit on the road polyline height")
+        self.assertEqual(data["outside"], 0, "Cars must stay inside the loaded sector")
+        self.assertGreater(data["moved"], 10)
+        self.assertEqual(data["typeTotal"], data["active"])
+        self.assertTrue(data["instOk"])
+        # Group 0 (roads along X) is green only in phase 0, group 1 (along Z) only in phase 2
+        self.assertEqual(data["stopX"], [False, True, True, True])
+        self.assertEqual(data["stopZ"], [True, True, False, True])
+
+    def test_webgpu_draws_instanced_vehicles(self):
+        """WebGPU renderer must draw one instanced call per vehicle type with the vehicle pipeline."""
+        data = self._run_node(r"""
+globalThis.GPUBufferUsage = { VERTEX: 1, INDEX: 2, UNIFORM: 4, COPY_DST: 8 };
+globalThis.GPUShaderStage = { VERTEX: 1, FRAGMENT: 2 };
+globalThis.GPUTextureUsage = { TEXTURE_BINDING: 1, COPY_DST: 2, RENDER_ATTACHMENT: 4 };
+const { WebGPURenderer } = await import('./web/renderer_webgpu.js');
+
+const draws = [];
+const device = {
+    createBuffer: (d) => ({ size: d.size, destroy() {} }),
+    queue: { writeBuffer() {}, submit() {} },
+};
+const pass = {
+    pipeline: null,
+    setPipeline(p) { this.pipeline = p; }, setBindGroup() {}, setVertexBuffer() {}, setIndexBuffer() {},
+    drawIndexed(count, instances, firstIndex, baseVertex, firstInstance) {
+        draws.push({ count, instances, firstInstance, pipeline: this.pipeline });
+    },
+    end() {},
+};
+device.createCommandEncoder = () => ({ beginRenderPass: () => pass, finish: () => ({}) });
+
+const r = new WebGPURenderer();
+r.device = device;
+r.pipeline = 'PIPELINE_MAIN';
+r.vehiclePipeline = 'PIPELINE_VEHICLE';
+r.bindGroup = {};
+r.uniformBuffer = { size: 2272 };
+r.canvas = { width: 800, height: 600 };
+r.context = { getCurrentTexture: () => ({ createView: () => ({}) }) };
+r.depthTexture = { createView: () => ({}), destroy() {} };
+r.depthWidth = 800; r.depthHeight = 600;
+
+const mesh = {
+    pos: new Float32Array(12), norm: new Float32Array(12), uv: new Float32Array(8),
+    col: new Float32Array(16), em: new Float32Array(4),
+    indices: new Uint16Array([0, 1, 2, 0, 2, 3]), indexFormat: 'uint16', indexCount: 6, vertexCount: 4,
+};
+r.uploadVehicleModel(mesh, 0);
+r.uploadVehicleModel(mesh, 2);
+const stats = r.render({
+    uniformBufferData: new Float32Array(568),
+    clearColor: [0, 0, 0],
+    vehicles: {
+        instances: new Float32Array(30 * 24),
+        typeCounts: new Uint32Array([20, 0, 10, 0, 0, 0]),
+        typeOffsets: new Uint32Array([0, 20, 20, 30, 30, 30]),
+    },
+});
+process.stdout.write(JSON.stringify({ draws, drawCalls: stats.drawCalls }));
+""")
+        self.assertEqual(data["drawCalls"], 2)
+        self.assertEqual([d["pipeline"] for d in data["draws"]], ["PIPELINE_VEHICLE", "PIPELINE_VEHICLE"])
+        self.assertEqual([(d["instances"], d["firstInstance"]) for d in data["draws"]], [(20, 0), (10, 20)])
+
+    def test_vehicle_shader_entry_points_present(self):
+        with open(os.path.join(WEB_DIR, "shaders.wgsl"), "r", encoding="utf-8") as f:
+            wgsl = f.read()
+        self.assertIn("fn vs_vehicle", wgsl)
+        with open(os.path.join(WEB_DIR, "renderer_webgl2.js"), "r", encoding="utf-8") as f:
+            wgl = f.read()
+        self.assertIn("VS_VEHICLE_GLSL300", wgl)
+        self.assertIn("drawElementsInstanced", wgl)
+
+
+
+class TestCityBasemap(unittest.TestCase):
+    """Low-detail Aguascalientes basemap (tools/build_city_basemap.py + web/city_basemap.js)."""
+
+    BASEMAP = os.path.join(ROOT, "models", "city_basemap.bin")
+
+    def setUp(self):
+        if not os.path.isfile(self.BASEMAP):
+            self.skipTest("models/city_basemap.bin not present")
+
+    def test_basemap_header_covers_road_network(self):
+        import struct
+        with open(self.BASEMAP, "rb") as f:
+            raw = f.read()
+        magic, cols, rows, x0, z0, spacing, min_h, max_h = struct.unpack_from("<4sIIfffff", raw, 0)
+        self.assertEqual(magic, b"CBM1")
+        self.assertEqual(len(raw), 32 + cols * rows * 4)
+        self.assertEqual(1024.0 % spacing, 0.0)
+        self.assertEqual(x0 % 1024.0, 0.0)
+        self.assertEqual(z0 % 1024.0, 0.0)
+        self.assertLess(min_h, max_h)
+        # Must contain both ring waypoints (Primer Anillo ~ -1.8 km, Tercer Anillo Norte ~ -7.1 km)
+        x1 = x0 + (cols - 1) * spacing
+        z1 = z0 + (rows - 1) * spacing
+        for wx, wz in ((50.0, -1800.0), (532.0, -7134.0), (-7500.0, 15.0), (4927.0, -7.5)):
+            self.assertTrue(x0 <= wx <= x1 and z0 <= wz <= z1, f"waypoint {wx},{wz} outside basemap")
+
+    def test_basemap_tool_is_reproducible(self):
+        try:
+            import numpy  # noqa: F401  (tools/geo_dem.py dependency)
+        except ImportError:
+            self.skipTest("numpy not installed")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = os.path.join(tmpdir, "city_basemap.bin")
+            proc = subprocess.run(
+                [sys.executable, os.path.join(ROOT, "tools", "build_city_basemap.py"), "--output", out],
+                capture_output=True, text=True, cwd=ROOT,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with open(out, "rb") as a, open(self.BASEMAP, "rb") as b:
+                self.assertEqual(a.read(), b.read(), "Regenerated city_basemap.bin differs from the committed one")
+
+    def test_basemap_matches_roads_and_builds_valid_cells(self):
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node is not installed in PATH")
+        script = r"""
+import fs from 'node:fs';
+const { parseRoadGraph } = await import('./web/traffic_sim.js');
+const bmMod = await import('./web/city_basemap.js');
+const load = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); };
+const graph = parseRoadGraph(load('models/road_network.bin'));
+const bm = bmMod.parseCityBasemap(load('models/city_basemap.bin'));
+
+const diffs = [];
+for (let i = 0; i < graph.nPoints; i += 7) {
+    const x = graph.points[i * 3], y = graph.points[i * 3 + 1], z = graph.points[i * 3 + 2];
+    diffs.push(y - bmMod.basemapHeightAt(bm, x, z));
+}
+diffs.sort((a, b) => a - b);
+const median = diffs[Math.floor(diffs.length / 2)];
+
+const buckets = bmMod.bucketRoadSegments(graph);
+const cells = {};
+for (const [mx, mz] of [[0, 0], [0, -7], [-8, 0]]) {
+    const cell = bmMod.buildBasemapCell(bm, graph, buckets, mx, mz);
+    const m = cell.meshData;
+    let maxIdx = 0;
+    for (const i of m.indices) if (i > maxIdx) maxIdx = i;
+    let streetVerts = 0;
+    for (let v = 0; v < m.vertexCount; v++) if (Math.abs(m.col[v * 4 + 3] - 0.95) < 0.01) streetVerts++;
+    const c = cell.chunks[0];
+    cells[`${mx}_${mz}`] = {
+        indexCountOk: m.indexCount === m.indices.length && m.indexCount % 3 === 0,
+        indicesInRange: maxIdx < m.vertexCount,
+        finite: m.pos.every(Number.isFinite) && m.norm.every(Number.isFinite),
+        streetVerts,
+        aabbOk: c.min_x <= mx * 1024 && c.max_x >= (mx + 1) * 1024 && c.min_y < c.max_y,
+    };
+}
+process.stdout.write(JSON.stringify({
+    median,
+    cellCount: bmMod.basemapCellKeys(bm).length,
+    outside: bmMod.buildBasemapCell(bm, graph, buckets, 500, 500) === null,
+    cells,
+}));
+"""
+        proc = subprocess.run([node_bin, "--input-type=module", "-e", script], capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 0, f"Node probe failed:\n{proc.stderr}\n{proc.stdout}")
+        data = json.loads(proc.stdout)
+        # road_network.bin points sit ROAD_SURFACE_OFFSET (0.12 m) above the same terrain function
+        self.assertAlmostEqual(data["median"], 0.12, delta=0.1)
+        self.assertGreater(data["cellCount"], 300)
+        self.assertTrue(data["outside"])
+        for key, cell in data["cells"].items():
+            self.assertTrue(cell["indexCountOk"], key)
+            self.assertTrue(cell["indicesInRange"], key)
+            self.assertTrue(cell["finite"], key)
+            self.assertTrue(cell["aabbOk"], key)
+            self.assertGreater(cell["streetVerts"], 100, f"cell {key} should contain streets")
+
+
+
+class TestCityBuildings(unittest.TestCase):
+    """Overture building footprints layer (tools/build_city_buildings.py + web/city_basemap.js)."""
+
+    BUILDINGS = os.path.join(ROOT, "models", "city_buildings.bin")
+
+    def setUp(self):
+        if not os.path.isfile(self.BUILDINGS):
+            self.skipTest("models/city_buildings.bin not present")
+
+    def test_cbb1_layout_and_counts(self):
+        import struct
+        with open(self.BUILDINGS, "rb") as f:
+            raw = f.read()
+        magic, n_cells, n_bld, n_pts = struct.unpack_from("<4sIII", raw, 0)
+        self.assertEqual(magic, b"CBB1")
+        self.assertEqual(len(raw), 16 + n_cells * 16 + n_bld * 4 + n_pts * 4)
+        self.assertGreater(n_bld, 300000, "Whole-city Overture extract expected (~325k buildings)")
+        total_b = total_p = 0
+        for i in range(n_cells):
+            _mx, _mz, first_b, count, first_p = struct.unpack_from("<hhIII", raw, 16 + i * 16)
+            self.assertEqual(first_b, total_b)
+            self.assertEqual(first_p, total_p)
+            for b in range(first_b, first_b + count):
+                n, cls, h_dm = struct.unpack_from("<BBH", raw, 16 + n_cells * 16 + b * 4)
+                self.assertTrue(3 <= n <= 24)
+                self.assertTrue(0 <= cls <= 6)
+                self.assertTrue(20 <= h_dm <= 2000)
+                total_p += n
+            total_b += count
+        self.assertEqual(total_b, n_bld)
+        self.assertEqual(total_p, n_pts)
+
+    def test_buildings_extrude_into_valid_meshes(self):
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node is not installed in PATH")
+        script = r"""
+import fs from 'node:fs';
+const bmMod = await import('./web/city_basemap.js');
+const load = (p) => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); };
+const bm = bmMod.parseCityBasemap(load('models/city_basemap.bin'));
+const bl = bmMod.parseCityBuildings(load('models/city_buildings.bin'));
+const out = {};
+for (const key of ['0_-2', '-1_0', '0_-7']) {
+    const [mx, mz] = key.split('_').map(Number);
+    const bare = bmMod.buildBasemapCell(bm, null, null, mx, mz, null);
+    const cell = bmMod.buildBasemapCell(bm, null, null, mx, mz, bl);
+    const m = cell.meshData;
+    let maxIdx = 0;
+    for (const i of m.indices) if (i > maxIdx) maxIdx = i;
+    let facade = 0, roof = 0;
+    for (let v = 0; v < m.vertexCount; v++) {
+        const a = m.col[v * 4 + 3];
+        if (Math.abs(a - 1.0) < 1e-3) facade++;
+        if (Math.abs(a - 0.35) < 1e-3) roof++;
+    }
+    out[key] = {
+        buildings: cell.buildingCount,
+        expected: bl.cells.has(key) ? bl.cells.get(key).count : 0,
+        extraVerts: m.vertexCount - bare.meshData.vertexCount,
+        facade, roof,
+        indicesOk: maxIdx < m.vertexCount && m.indexCount % 3 === 0,
+        finite: m.pos.every(Number.isFinite),
+        uvInAtlas: Array.from(m.uv).every((u) => u > -1.001 && u < 1.001),
+    };
+}
+process.stdout.write(JSON.stringify(out));
+"""
+        proc = subprocess.run([node_bin, "--input-type=module", "-e", script], capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 0, f"Node probe failed:\n{proc.stderr}\n{proc.stdout}")
+        for key, cell in json.loads(proc.stdout).items():
+            self.assertGreater(cell["buildings"], 100, key)
+            self.assertEqual(cell["buildings"], cell["expected"], key)
+            self.assertEqual(cell["extraVerts"], cell["facade"] + cell["roof"], key)
+            self.assertGreater(cell["facade"], cell["buildings"] * 12, key)  # >= 3 walls x 4 vertices
+            self.assertTrue(cell["indicesOk"], key)
+            self.assertTrue(cell["finite"], key)
+            self.assertTrue(cell["uvInAtlas"], key)
 
 
 if __name__ == "__main__":

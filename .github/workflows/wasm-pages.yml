@@ -1,12 +1,12 @@
 name: StreetVulkan WASM & WebGPU Pages
 
+# Continuous Deployment: publish only commits whose CI (build, unit tests,
+# ASan, WASM reproducibility, ISO checks and E2E smoke test) finished green.
 on:
-  push:
+  workflow_run:
+    workflows: ["StreetVulkan CI (DevOps & Quality Gate)"]
+    types: [completed]
     branches: [ main ]
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
-      - '.github/workflows/ci.yml'
   workflow_dispatch: {}
 
 permissions:
@@ -21,10 +21,13 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v6
@@ -44,7 +47,9 @@ jobs:
             models/traffic_signals.json \
             models/rolcar_aguascalientes.json \
             models/utility_poles_rolcar.json \
-            models/road_network.bin; do
+            models/road_network.bin \
+            models/city_basemap.bin \
+            models/city_buildings.bin; do
             if [ -f "$f" ]; then cp "$f" _site/models/; fi
           done
           if [ -d models/cars ]; then

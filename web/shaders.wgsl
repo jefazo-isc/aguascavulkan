@@ -74,6 +74,50 @@ fn vs_building(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+// Instanced vehicles: 96-byte CarInstanceData stream (mat4 model, vec4 tint, f32 brake, pad[3])
+// mirroring shaders/vertex.vert. Shares fs_main (matID 2.0 = vehicle).
+struct VehicleInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) texCoord: vec2<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) emission: f32,
+    @location(5) model0: vec4<f32>,
+    @location(6) model1: vec4<f32>,
+    @location(7) model2: vec4<f32>,
+    @location(8) model3: vec4<f32>,
+    @location(9) tint: vec4<f32>,
+    @location(10) brake: f32,
+};
+
+@vertex
+fn vs_vehicle(in: VehicleInput) -> VertexOutput {
+    var out: VertexOutput;
+    let worldMat = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
+    let worldPos4 = worldMat * vec4<f32>(in.position, 1.0);
+    out.clipPos = u.mvp * worldPos4;
+    out.worldPos = worldPos4.xyz;
+    let n = (worldMat * vec4<f32>(in.normal, 0.0)).xyz;
+    out.normal = select(vec3<f32>(0.0, 1.0, 0.0), normalize(n), dot(n, n) > 1e-10);
+    out.texCoord = in.texCoord;
+
+    // Tint only the body paint: keep lights, black rubber/trim and glass intact
+    let isLight = in.emission > 0.4;
+    let isTrim = in.color.r < 0.28 && in.color.g < 0.28 && in.color.b < 0.28;
+    let isGlass = in.color.b > 0.55 && in.color.r < 0.45 && in.color.g > 0.45;
+    var carCol = in.color.rgb;
+    if (!isLight && !isTrim && !isGlass) {
+        carCol = in.color.rgb * in.tint.rgb * 1.30;
+    }
+    out.color = vec4<f32>(carCol, 2.0);
+
+    out.emission = in.emission;
+    if (in.brake > 0.5 && in.emission > 0.4 && in.color.r > 0.6 && in.color.g < 0.25) {
+        out.emission = 3.0;
+    }
+    return out;
+}
+
 fn srgbToLinear(c: vec3<f32>) -> vec3<f32> {
     return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
 }

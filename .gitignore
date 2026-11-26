@@ -33,6 +33,7 @@ models/captura_*.png
 assets/satellite_*.png
 captures/
 logs/
+e2e-artifacts/
 metodologias/
 
 # Python y entorno

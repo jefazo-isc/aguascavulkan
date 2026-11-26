@@ -106,12 +106,18 @@ web-build:
 	node --check web/app.js
 	node --check web/renderer_webgpu.js
 	node --check web/renderer_webgl2.js
+	node --check web/traffic_sim.js
+	node --check web/city_basemap.js
+	node --check tests/e2e/smoke.mjs
 
 web-test: web-build
 	python3 -m unittest discover -s tests -v
+
+e2e:
+	node tests/e2e/smoke.mjs
 
 serve: web-build
 	@echo "Lanzando servidor StreetVulkan Web en http://localhost:8080/web/ ..."
 	python3 -m http.server 8080
 
-.PHONY: all web legacy-native native clean debug test asan-test metrics quality web-build web-test serve
+.PHONY: all web legacy-native native clean debug test asan-test metrics quality web-build web-test e2e serve
