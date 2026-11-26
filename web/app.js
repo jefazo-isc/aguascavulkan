@@ -83,6 +83,8 @@ async function main() {
         elVerts:      document.getElementById('hud-verts'),
         elPos:        document.getElementById('hud-pos'),
         elCars:       document.getElementById('hud-cars'),
+        elCarsStopped: document.getElementById('hud-cars-stopped'),
+        elCarSpeed:   document.getElementById('hud-car-speed'),
         elLoader:     document.getElementById('loader-overlay'),
         elLoaderText: document.getElementById('loader-text'),
         elLoaderBar:  document.getElementById('loader-bar'),
@@ -314,6 +316,7 @@ async function main() {
     // Road-graph traffic & basemap async load
     let trafficSim = null;
     let trafficGraph = null;
+    let trafficMode = 'loading';
     const fallbackInstances = new Float32Array(state.carCount * CAR_INSTANCE_FLOATS);
     const fallbackTypeCounts = new Uint32Array(CAR_TYPES.length);
     const fallbackTypeOffsets = new Uint32Array(CAR_TYPES.length);
@@ -329,10 +332,12 @@ async function main() {
             console.warn('[Basemap] city_basemap.bin unavailable; only GLB sectors are shown');
         }
         if (!graph) {
+            trafficMode = 'fallback';
             console.warn('[Traffic] road_network.bin unavailable; using WASM corridor vehicles');
             return;
         }
         trafficSim = new TrafficSimulation(graph, state.carCount);
+        trafficMode = 'road-graph';
         trafficSim.isDrivable = (x, z) => {
             const key = sectorKeyAt(x, z);
             return sectorManager.sectorCache.has(key) || lodCells.has(key);
@@ -404,6 +409,19 @@ async function main() {
         }
         stageCorridorInstances(f32Mem, MEM_CARS_PTR, state.carCount, fallbackInstances, fallbackTypeCounts, fallbackTypeOffsets);
         return { instances: fallbackInstances, typeCounts: fallbackTypeCounts, typeOffsets: fallbackTypeOffsets };
+    }
+
+    function trafficTelemetry() {
+        if (!state.carsEnabled) {
+            return { status: 'disabled', activeCount: 0, stoppedCount: 0, averageSpeedKmh: 0.0 };
+        }
+        if (trafficMode === 'road-graph' && trafficSim) {
+            return { status: 'ready', ...trafficSim.getStats() };
+        }
+        if (trafficMode === 'fallback') {
+            return { status: 'fallback', activeCount: state.carCount, stoppedCount: null, averageSpeedKmh: null };
+        }
+        return { status: 'loading', activeCount: 0, stoppedCount: null, averageSpeedKmh: null };
     }
 
     function frameLoop(now) {
@@ -625,10 +643,9 @@ async function main() {
             currentFps = fpsFrames / fpsAccum;
             fpsAccum = 0;
             fpsFrames = 0;
-            const activeCars = trafficSim ? trafficSim.activeCount : state.carCount;
             updateTelemetry(
                 stats, state, canvas,
-                sectorManager.sectorCache.size, lodCells.size, activeCars,
+                sectorManager.sectorCache.size, lodCells.size, trafficTelemetry(),
                 currentFps, avgFrameMs, avgCpuMs, TRAFFIC_PHASE_LABELS
             );
         }

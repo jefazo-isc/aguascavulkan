@@ -18,6 +18,8 @@ let _elChunks   = null;
 let _elVerts    = null;
 let _elPos      = null;
 let _elCars     = null;
+let _elCarsStopped = null;
+let _elCarSpeed = null;
 let _elLoader   = null;
 let _elLoaderText = null;
 let _elLoaderBar  = null;
@@ -41,6 +43,8 @@ export function initHUD(elements) {
     _elVerts      = elements.elVerts;
     _elPos        = elements.elPos;
     _elCars       = elements.elCars || null;
+    _elCarsStopped = elements.elCarsStopped || null;
+    _elCarSpeed   = elements.elCarSpeed || null;
     _elLoader     = elements.elLoader;
     _elLoaderText = elements.elLoaderText;
     _elLoaderBar  = elements.elLoaderBar;
@@ -124,12 +128,14 @@ export function updateCanvasSize(canvas) {
  * @param {object} state        — simulation state
  * @param {HTMLCanvasElement} canvas
  * @param {number} sectorCount
+ * @param {number} lodCount
+ * @param {object} trafficStats — { status, activeCount, stoppedCount, averageSpeedKmh }
  * @param {number} currentFps
  * @param {number} avgFrameMs
  * @param {number} avgCpuMs
  * @param {string[]} TRAFFIC_PHASE_LABELS
  */
-export function updateTelemetry(stats, state, canvas, sectorCount, lodCount, activeCarCount, currentFps, avgFrameMs, avgCpuMs, TRAFFIC_PHASE_LABELS) {
+export function updateTelemetry(stats, state, canvas, sectorCount, lodCount, trafficStats, currentFps, avgFrameMs, avgCpuMs, TRAFFIC_PHASE_LABELS) {
     if (_elRes) _elRes.textContent = `${canvas.width}x${canvas.height} px`;
     if (_elTime) {
         const hrs  = Math.floor(state.simHour);
@@ -160,7 +166,21 @@ export function updateTelemetry(stats, state, canvas, sectorCount, lodCount, act
         const { camX, camY, camZ, yaw } = state._camPos;
         _elPos.textContent = `${camX.toFixed(1)}, ${camY.toFixed(1)}, ${camZ.toFixed(1)} | Yaw ${yaw.toFixed(1)}°`;
     }
-    if (_elCars && state.carsEnabled) {
-        _elCars.textContent = `${activeCarCount} activos`;
+    if (trafficStats?.status === 'disabled') {
+        if (_elCars) _elCars.textContent = 'Tráfico desactivado';
+        if (_elCarsStopped) _elCarsStopped.textContent = '0 detenidos';
+        if (_elCarSpeed) _elCarSpeed.textContent = '0.0 km/h';
+    } else if (trafficStats?.status === 'ready') {
+        if (_elCars) _elCars.textContent = `${trafficStats.activeCount} activos`;
+        if (_elCarsStopped) _elCarsStopped.textContent = `${trafficStats.stoppedCount} detenidos`;
+        if (_elCarSpeed) _elCarSpeed.textContent = `${trafficStats.averageSpeedKmh.toFixed(1)} km/h`;
+    } else {
+        if (_elCars) {
+            _elCars.textContent = trafficStats?.status === 'fallback'
+                ? `${trafficStats.activeCount} activos`
+                : 'N/D';
+        }
+        if (_elCarsStopped) _elCarsStopped.textContent = 'N/D';
+        if (_elCarSpeed) _elCarSpeed.textContent = 'N/D';
     }
 }

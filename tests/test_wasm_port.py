@@ -1570,6 +1570,72 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(data["stopX"], [False, True, True, True])
         self.assertEqual(data["stopZ"], [True, True, False, True])
 
+    def test_traffic_stats_use_actual_alive_vehicle_speeds(self):
+        """Traffic metrics must use alive cars, include stopped cars, and handle the 0.1 m/s threshold."""
+        data = self._run_node(r"""
+const { TrafficSimulation, STOPPED_SPEED_THRESHOLD_MPS } = await import('./web/traffic_sim.js');
+const sim = new TrafficSimulation({}, 5, () => 0.5);
+
+const empty = sim.getStats();
+sim.activeCount = 999; // getStats must not trust the cached value
+sim.cars[0].alive = true; sim.cars[0].v = 0.0;
+sim.cars[1].alive = true; sim.cars[1].v = 0.099;
+sim.cars[2].alive = true; sim.cars[2].v = 0.1;
+sim.cars[3].alive = true; sim.cars[3].v = 10.0;
+sim.cars[4].alive = false; sim.cars[4].v = 100.0;
+const mixed = sim.getStats();
+
+sim.cars[0].v = 5.0;
+sim.cars[1].v = 5.0;
+sim.cars[2].alive = false;
+sim.cars[3].v = 5.0;
+const updated = sim.getStats();
+
+process.stdout.write(JSON.stringify({ threshold: STOPPED_SPEED_THRESHOLD_MPS, empty, mixed, updated }));
+""")
+        self.assertEqual(data["threshold"], 0.1)
+        self.assertEqual(data["empty"], {"activeCount": 0, "stoppedCount": 0, "averageSpeedKmh": 0})
+        self.assertEqual(data["mixed"]["activeCount"], 4)
+        self.assertEqual(data["mixed"]["stoppedCount"], 2)
+        self.assertAlmostEqual(data["mixed"]["averageSpeedKmh"], 9.1791, places=4)
+        self.assertEqual(data["updated"]["activeCount"], 3)
+        self.assertEqual(data["updated"]["stoppedCount"], 0)
+        self.assertAlmostEqual(data["updated"]["averageSpeedKmh"], 18.0, places=6)
+
+    def test_traffic_metrics_hud_special_states(self):
+        """HUD must distinguish live metrics, pause, disabled traffic, loading, and corridor fallback."""
+        data = self._run_node(r"""
+const { initHUD, updateTelemetry } = await import('./web/hud.js');
+const el = () => ({ textContent: '', className: '', classList: { toggle() {}, add() {}, remove() {} } });
+const cars = el(), stopped = el(), speed = el();
+initHUD({ elCars: cars, elCarsStopped: stopped, elCarSpeed: speed });
+const rendererStats = { drawCalls: 0, visibleChunks: 0, totalChunks: 0, visibleVerts: 0, totalVerts: 0 };
+const state = {
+    simHour: 14, timeFrozen: false, trafficPhase: 0, trafficSignals: [], carsEnabled: true, paused: false,
+    _camPos: { camX: 0, camY: 0, camZ: 0, yaw: 0 },
+};
+const canvas = { width: 800, height: 600 };
+const phases = ['F0'];
+const render = (traffic) => {
+    updateTelemetry(rendererStats, state, canvas, 0, 0, traffic, 60, 16.6, 0.5, phases);
+    return [cars.textContent, stopped.textContent, speed.textContent];
+};
+const ready = render({ status: 'ready', activeCount: 3, stoppedCount: 1, averageSpeedKmh: 12.34 });
+state.paused = true;
+const paused = render({ status: 'ready', activeCount: 3, stoppedCount: 1, averageSpeedKmh: 12.34 });
+const fallback = render({ status: 'fallback', activeCount: 50, stoppedCount: null, averageSpeedKmh: null });
+const loading = render({ status: 'loading', activeCount: 0, stoppedCount: null, averageSpeedKmh: null });
+state.carsEnabled = false;
+const disabled = render({ status: 'disabled', activeCount: 0, stoppedCount: 0, averageSpeedKmh: 0 });
+const payload = JSON.stringify({ ready, paused, fallback, loading, disabled });
+process.stdout.write(payload.replace(/[^\x20-\x7E]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`));
+""")
+        self.assertEqual(data["ready"], ["3 activos", "1 detenidos", "12.3 km/h"])
+        self.assertEqual(data["paused"], data["ready"])
+        self.assertEqual(data["fallback"], ["50 activos", "N/D", "N/D"])
+        self.assertEqual(data["loading"], ["N/D", "N/D", "N/D"])
+        self.assertEqual(data["disabled"], ["Tráfico desactivado", "0 detenidos", "0.0 km/h"])
+
     def test_webgpu_draws_instanced_vehicles(self):
         """WebGPU renderer must draw one instanced call per vehicle type with the vehicle pipeline."""
         data = self._run_node(r"""

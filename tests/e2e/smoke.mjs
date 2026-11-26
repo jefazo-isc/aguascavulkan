@@ -167,6 +167,8 @@ const HUD_PROBE = `(() => {
         fps: t('hud-fps'),
         chunks: t('hud-chunks'),
         cars: t('hud-cars'),
+        carsStopped: t('hud-cars-stopped'),
+        averageSpeed: t('hud-car-speed'),
         pos: t('hud-pos'),
     };
 })()`;
@@ -213,7 +215,8 @@ async function main() {
         // 1-3. Initial load: GLB sector, basemap and traffic
         const boot = await waitFor(cdp, (h) => h.loaderHidden && /Sectores: [1-9]\d*/.test(h.chunks) &&
             (Number((h.chunks.match(/Mapa: (\d+)/) || [])[1]) >= 10) && /^\d+ FPS/.test(h.fps) &&
-            Number.parseInt(h.cars, 10) > 0, 'sector + basemap + traffic');
+            Number.parseInt(h.cars, 10) > 0 && /^\d+ detenidos$/.test(h.carsStopped) &&
+            /^\d+\.\d km\/h$/.test(h.averageSpeed), 'sector + basemap + traffic metrics');
         report.bootMs = boot.ms;
         report.hud = boot.hud;
         await sleep(1500);
@@ -223,6 +226,8 @@ async function main() {
             !cdp.console.some((l) => /standalone fallback|Modo standalone/.test(l)), boot.hud.chunks);
         check('Mapa base de la ciudad construido', Number((boot.hud.chunks.match(/Mapa: (\d+)/) || [])[1]) >= 10, boot.hud.chunks);
         check('Tráfico sobre la red vial activo', Number.parseInt(boot.hud.cars, 10) >= 20, boot.hud.cars);
+        check('Métrica de autos detenidos disponible', /^\d+ detenidos$/.test(boot.hud.carsStopped), boot.hud.carsStopped);
+        check('Métrica de velocidad promedio disponible', /^\d+\.\d km\/h$/.test(boot.hud.averageSpeed), boot.hud.averageSpeed);
 
         // 4. Teleports
         await cdp.pressKey('Digit1', '1');
