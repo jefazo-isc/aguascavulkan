@@ -1,0 +1,40 @@
+name: Historia de usuario
+description: Nueva funcionalidad o mejora para el backlog Scrum
+title: "Historia: "
+labels: ["historia"]
+body:
+  - type: textarea
+    id: historia
+    attributes:
+      label: Historia
+      description: "Como [perfil], quiero [capacidad], para [beneficio]."
+      placeholder: Como visitante de la demo, quiero ..., para ...
+    validations:
+      required: true
+  - type: textarea
+    id: criterios
+    attributes:
+      label: Criterios de aceptación
+      description: Condiciones verificables; cada una debe poder comprobarse con una prueba o una demo.
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+  - type: dropdown
+    id: tema
+    attributes:
+      label: Tema
+      options: [Renderizado, Geodatos, Tráfico, UX, DevOps, Documentación]
+    validations:
+      required: true
+  - type: dropdown
+    id: puntos
+    attributes:
+      label: Story points (estimación relativa)
+      options: ["1", "2", "3", "5", "8", "13"]
+  - type: textarea
+    id: notas
+    attributes:
+      label: Por dónde empezar
+      description: Archivos, módulos o herramientas involucradas.
