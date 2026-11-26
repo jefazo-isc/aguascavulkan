@@ -48,6 +48,71 @@ void main() {
 }
 `;
 
+// Instanced vehicles: 96-byte CarInstanceData stream (mat4 model, vec4 tint, float brake, pad[3])
+// mirroring shaders/vertex.vert. Shares the FS_GLSL300 fragment stage (matID 2.0 = vehicle).
+const VS_VEHICLE_GLSL300 = `#version 300 es
+precision highp float;
+
+layout(location=0) in vec3 inPosition;
+layout(location=1) in vec3 inNormal;
+layout(location=2) in vec2 inTexCoord;
+layout(location=3) in vec4 inColor;
+layout(location=4) in float inEmission;
+layout(location=5) in vec4 inModel0;
+layout(location=6) in vec4 inModel1;
+layout(location=7) in vec4 inModel2;
+layout(location=8) in vec4 inModel3;
+layout(location=9) in vec4 inTint;
+layout(location=10) in float inBrake;
+
+struct PointLight {
+    vec4 posRadius;
+    vec4 colorIntensity;
+};
+
+layout(std140) uniform LightingUniforms {
+    mat4 u_mvp;
+    mat4 u_model;
+    vec4 u_sunDir;
+    vec4 u_skyColor;
+    vec4 u_camPos;
+    vec4 u_flashPos;
+    vec4 u_flashDir;
+    vec4 u_params;
+    PointLight u_lights[64];
+};
+
+out vec2 fragTexCoord;
+out vec4 fragColor;
+out float fragEmission;
+out vec3 fragNormal;
+out vec3 fragWorldPos;
+
+void main() {
+    mat4 worldMat = mat4(inModel0, inModel1, inModel2, inModel3);
+    vec4 worldPos = worldMat * vec4(inPosition, 1.0);
+    gl_Position = u_mvp * worldPos;
+    fragWorldPos = worldPos.xyz;
+    fragNormal = normalize(mat3(worldMat) * inNormal);
+    fragTexCoord = inTexCoord;
+
+    // Tint only the body paint: keep lights, black rubber/trim and glass intact
+    vec3 carCol = inColor.rgb;
+    bool isLight = inEmission > 0.4;
+    bool isTrim = inColor.r < 0.28 && inColor.g < 0.28 && inColor.b < 0.28;
+    bool isGlass = inColor.b > 0.55 && inColor.r < 0.45 && inColor.g > 0.45;
+    if (!isLight && !isTrim && !isGlass) {
+        carCol = inColor.rgb * inTint.rgb * 1.30;
+    }
+    fragColor = vec4(carCol, 2.0);
+
+    fragEmission = inEmission;
+    if (inBrake > 0.5 && inEmission > 0.4 && inColor.r > 0.6 && inColor.g < 0.25) {
+        fragEmission = 3.0;
+    }
+}
+`;
+
 const FS_GLSL300 = `#version 300 es
 precision highp float;
 precision highp int;
@@ -813,7 +878,10 @@ export class WebGL2Renderer {
         this.gl = null;
         this.program = null;
         this.buildingProgram = null;
-        this.vehicleMesh = null;
+        this.vehicleProgram = null;
+        this.vehicleMeshes = [];
+        this.vehicleInstanceBuf = null;
+        this.vehicleInstanceBytes = 0;
         this.ubo = null;
         this.satelliteTex = null;
         this.facadeTex = null;
@@ -886,6 +954,8 @@ export class WebGL2Renderer {
 
         this.program = this._createProgram(gl, VS_GLSL300, FS_GLSL300);
         this.buildingProgram = this._createProgram(gl, VS_BUILDING_GLSL300, FS_BUILDING_GLSL300);
+        this.vehicleProgram = this._createProgram(gl, VS_VEHICLE_GLSL300, FS_GLSL300);
+        this.vehicleInstanceBuf = gl.createBuffer();
 
         this.ubo = gl.createBuffer();
         gl.bindBuffer(gl.UNIFORM_BUFFER, this.ubo);
@@ -947,19 +1017,24 @@ export class WebGL2Renderer {
         return buf;
     }
 
-    uploadVehicleModel(meshData) {
+    _deleteVehicleMesh(mesh) {
+        const gl = this.gl;
+        if (!mesh || !gl) return;
+        gl.deleteVertexArray(mesh.vao);
+        gl.deleteBuffer(mesh.posBuf);
+        gl.deleteBuffer(mesh.normBuf);
+        gl.deleteBuffer(mesh.uvBuf);
+        gl.deleteBuffer(mesh.colBuf);
+        gl.deleteBuffer(mesh.emBuf);
+        gl.deleteBuffer(mesh.idxBuf);
+    }
+
+    // One mesh per vehicle type (web/traffic_sim.js CAR_TYPES); typeIndex 0 = sedan.
+    uploadVehicleModel(meshData, typeIndex = 0) {
         const gl = this.gl;
         if (!gl || !meshData) return;
-        if (this.vehicleMesh) {
-            gl.deleteVertexArray(this.vehicleMesh.vao);
-            gl.deleteBuffer(this.vehicleMesh.posBuf);
-            gl.deleteBuffer(this.vehicleMesh.normBuf);
-            gl.deleteBuffer(this.vehicleMesh.uvBuf);
-            gl.deleteBuffer(this.vehicleMesh.colBuf);
-            gl.deleteBuffer(this.vehicleMesh.emBuf);
-            gl.deleteBuffer(this.vehicleMesh.idxBuf);
-            this.vehicleMesh = null;
-        }
+        this._deleteVehicleMesh(this.vehicleMeshes[typeIndex]);
+        this.vehicleMeshes[typeIndex] = null;
 
         const vao = gl.createVertexArray();
         gl.bindVertexArray(vao);
@@ -984,6 +1059,13 @@ export class WebGL2Renderer {
         gl.enableVertexAttribArray(4);
         gl.vertexAttribPointer(4, 1, gl.FLOAT, false, 0, 0);
 
+        // Per-instance attributes 5..10 read from the shared instance buffer (pointers set per draw)
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vehicleInstanceBuf);
+        for (let loc = 5; loc <= 10; loc++) {
+            gl.enableVertexAttribArray(loc);
+            gl.vertexAttribDivisor(loc, 1);
+        }
+
         const idxBuf = gl.createBuffer();
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, meshData.indices, gl.STATIC_DRAW);
@@ -993,7 +1075,7 @@ export class WebGL2Renderer {
         gl.bindVertexArray(null);
 
         const isUint16 = (meshData.indexFormat === 'uint16');
-        this.vehicleMesh = {
+        this.vehicleMeshes[typeIndex] = {
             vao,
             posBuf,
             normBuf,
@@ -1005,6 +1087,52 @@ export class WebGL2Renderer {
             indexCount: meshData.indexCount,
             vertexCount: meshData.vertexCount,
         };
+    }
+
+    get vehicleMesh() {
+        return this.vehicleMeshes[0] || null;
+    }
+
+    _renderVehicles(vehicles) {
+        const gl = this.gl;
+        const { instances, typeCounts, typeOffsets } = vehicles;
+        gl.useProgram(this.vehicleProgram);
+        gl.bindBuffer(gl.UNIFORM_BUFFER, this.ubo);
+        gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, this.ubo);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.satelliteTex);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this.facadeTex);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vehicleInstanceBuf);
+        if (this.vehicleInstanceBytes < instances.byteLength) {
+            gl.bufferData(gl.ARRAY_BUFFER, instances.byteLength, gl.DYNAMIC_DRAW);
+            this.vehicleInstanceBytes = instances.byteLength;
+        }
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, instances);
+
+        let drawCalls = 0;
+        let verts = 0;
+        const stride = 96;
+        for (let t = 0; t < typeCounts.length; t++) {
+            const count = typeCounts[t];
+            const mesh = this.vehicleMeshes[t] || this.vehicleMeshes[0];
+            if (!count || !mesh) continue;
+            gl.bindVertexArray(mesh.vao);
+            // WebGL2 has no baseInstance: offset the instance attribute pointers instead
+            const base = typeOffsets[t] * stride;
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.vehicleInstanceBuf);
+            for (let c = 0; c < 4; c++) {
+                gl.vertexAttribPointer(5 + c, 4, gl.FLOAT, false, stride, base + c * 16);
+            }
+            gl.vertexAttribPointer(9, 4, gl.FLOAT, false, stride, base + 64);
+            gl.vertexAttribPointer(10, 1, gl.FLOAT, false, stride, base + 80);
+            gl.drawElementsInstanced(gl.TRIANGLES, mesh.indexCount, mesh.glIndexType, 0, count);
+            drawCalls++;
+            verts += mesh.indexCount * count;
+        }
+        gl.bindVertexArray(null);
+        return { drawCalls, verts };
     }
 
     uploadSector(sectorKey, meshData, chunks) {
@@ -1332,53 +1460,12 @@ export class WebGL2Renderer {
             visibleVerts += sec.indexCount;
         }
 
-        // Dynamic simulated vehicle rendering
-        if (this.vehicleMesh && frame.cars && frame.cars.count > 0 && frame.cars.memory) {
-            const f32Mem = frame.cars.memory;
-            const carsBase = (frame.cars.ptr >> 2);
-            const count = frame.cars.count;
-            gl.bindVertexArray(this.vehicleMesh.vao);
-            gl.useProgram(this.program);
-            // Re-bind UBO after sector loop may have left stale state
-            gl.bindBuffer(gl.UNIFORM_BUFFER, this.ubo);
-            gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, this.ubo);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, this.satelliteTex);
-            gl.activeTexture(gl.TEXTURE1);
-            gl.bindTexture(gl.TEXTURE_2D, this.facadeTex);
-
-            for (let i = 0; i < count; i++) {
-                const off = carsBase + i * 6;
-                const cx = f32Mem[off + 0];
-                const cy = f32Mem[off + 1];
-                const cz = f32Mem[off + 2];
-                const cyawDeg = f32Mem[off + 3];
-                const rad = cyawDeg * 0.017453292519943295;
-                const c = Math.cos(rad);
-                const s = Math.sin(rad);
-
-                const carModel = new Float32Array([
-                    c,  0, -s,  0,
-                    0,  1,  0,  0,
-                    s,  0,  c,  0,
-                    cx, cy, cz, 1,
-                ]);
-
-                // Update model matrix in uniform buffer at offset 64 (16 floats)
-                gl.bufferSubData(gl.UNIFORM_BUFFER, 64, carModel);
-                gl.drawElements(gl.TRIANGLES, this.vehicleMesh.indexCount, this.vehicleMesh.glIndexType, 0);
-                drawCalls++;
-                visibleVerts += this.vehicleMesh.indexCount;
-            }
-
-            // Restore identity model matrix in uniform buffer
-            const identityModel = new Float32Array([
-                1, 0, 0, 0,
-                0, 1, 0, 0,
-                0, 0, 1, 0,
-                0, 0, 0, 1,
-            ]);
-            gl.bufferSubData(gl.UNIFORM_BUFFER, 64, identityModel);
+        // Instanced road-graph vehicles (web/traffic_sim.js)
+        const vehicles = frame.vehicles;
+        if (vehicles && this.vehicleProgram && this.vehicleMeshes.length > 0 && vehicles.instances) {
+            const vStats = this._renderVehicles(vehicles);
+            drawCalls += vStats.drawCalls;
+            visibleVerts += vStats.verts;
         }
 
         gl.bindVertexArray(null);
@@ -1389,21 +1476,15 @@ export class WebGL2Renderer {
         for (const key of Array.from(this.sectors.keys())) {
             this.unloadSector(key);
         }
-        if (this.vehicleMesh && this.gl) {
-            this.gl.deleteVertexArray(this.vehicleMesh.vao);
-            this.gl.deleteBuffer(this.vehicleMesh.posBuf);
-            this.gl.deleteBuffer(this.vehicleMesh.normBuf);
-            this.gl.deleteBuffer(this.vehicleMesh.uvBuf);
-            this.gl.deleteBuffer(this.vehicleMesh.colBuf);
-            this.gl.deleteBuffer(this.vehicleMesh.emBuf);
-            this.gl.deleteBuffer(this.vehicleMesh.idxBuf);
-            this.vehicleMesh = null;
-        }
+        for (const mesh of this.vehicleMeshes) this._deleteVehicleMesh(mesh);
+        this.vehicleMeshes = [];
+        if (this.gl && this.vehicleInstanceBuf) this.gl.deleteBuffer(this.vehicleInstanceBuf);
         if (this.gl) {
             if (this.satelliteTex) this.gl.deleteTexture(this.satelliteTex);
             if (this.facadeTex) this.gl.deleteTexture(this.facadeTex);
             if (this.ubo) this.gl.deleteBuffer(this.ubo);
             if (this.buildingProgram) this.gl.deleteProgram(this.buildingProgram);
+            if (this.vehicleProgram) this.gl.deleteProgram(this.vehicleProgram);
             if (this.program) this.gl.deleteProgram(this.program);
         }
     }

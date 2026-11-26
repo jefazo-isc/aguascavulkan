@@ -786,6 +786,10 @@ class MockGL2 {
     drawElements(mode, count, type, offset) {
         this.draws.push({ mode, count, type, offset, program: this.activeProgram, vao: this.activeVao });
     }
+    vertexAttribDivisor() {}
+    drawElementsInstanced(mode, count, type, offset, instances) {
+        this.draws.push({ mode, count, type, offset, instances, program: this.activeProgram, vao: this.activeVao });
+    }
     getExtension() { return null; } getParameter() { return 'MockWebGL2'; }
 }
 
@@ -908,29 +912,33 @@ const multiOk = (
     mockGl.draws[1].program === renderer.buildingProgram && mockGl.draws[1].count === 3
 );
 
-// 7. Vehicle model upload and dynamic car rendering
-renderer.uploadVehicleModel({
+// 7. Vehicle model upload and instanced car rendering (one draw per vehicle type)
+const carMesh = {
     pos: new Float32Array(18), norm: new Float32Array(18), uv: new Float32Array(12),
     col: new Float32Array(24), em: new Float32Array(6),
     indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
     indexCount: 6, vertexCount: 4, indexFormat: 'uint16'
-});
-const fakeCarsMem = new Float32Array(50 * 6);
-for (let i = 0; i < 50; i++) {
-    fakeCarsMem[i * 6 + 0] = 500.0 + i;
-    fakeCarsMem[i * 6 + 1] = 8.8;
-    fakeCarsMem[i * 6 + 2] = 795.5;
-    fakeCarsMem[i * 6 + 3] = 90.0;
-}
+};
+renderer.uploadVehicleModel(carMesh, 0);
+renderer.uploadVehicleModel(carMesh, 5);
 mockGl.draws = [];
 renderer.render({
     uniformBufferData: new Float32Array(568),
     clearColor: [0, 0, 0],
     cullingEnabled: false,
     renderMode: 'all',
-    cars: { ptr: 0, count: 50, memory: fakeCarsMem }
+    vehicles: {
+        instances: new Float32Array(50 * 24),
+        typeCounts: new Uint32Array([45, 0, 0, 0, 0, 5]),
+        typeOffsets: new Uint32Array([0, 45, 45, 45, 45, 45]),
+    }
 });
-const vehicleOk = (mockGl.draws.length === 52); // 2 submeshes + 50 cars
+const carDraws = mockGl.draws.slice(2);
+const vehicleOk = (
+    mockGl.draws.length === 4 && // 2 submeshes + 2 instanced vehicle types
+    carDraws.every(d => d.program === renderer.vehicleProgram) &&
+    carDraws[0].instances === 45 && carDraws[1].instances === 5
+);
 
 process.stdout.write(JSON.stringify({
     hasBuildingProgram,
@@ -1460,6 +1468,7 @@ class TestTercerAnilloExpansion(unittest.TestCase):
                 h1 = terrain.get_real_topography(float(x), bz + 0.0001)
                 self.assertAlmostEqual(h0, h1, delta=0.001,
                                        msg=f"Seam detected at Z boundary {bz} at x={x}: {h0} vs {h1}")
+
 
 
 if __name__ == "__main__":

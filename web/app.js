@@ -9,6 +9,7 @@
 
 import { WebGPURenderer } from './renderer_webgpu.js';
 import { WebGL2Renderer } from './renderer_webgl2.js';
+import { CAR_TYPES, CAR_INSTANCE_FLOATS, TrafficSimulation, parseRoadGraph, stageCorridorInstances } from './traffic_sim.js';
 
 // Exact initial camera spawn in front of Rolcar Paseo de la Cruz (src/math_camera.c)
 const INITIAL_CAMERA = {
@@ -655,9 +656,9 @@ function buildFallbackVehicleMesh() {
     };
 }
 
-async function loadVehicleModelWithFallback(basePrefix) {
+async function loadVehicleModelWithFallback(basePrefix, typeName = 'sedan') {
     try {
-        const carGlbUrl = `${basePrefix}models/cars/car_sedan.glb`;
+        const carGlbUrl = `${basePrefix}models/cars/car_${typeName}.glb`;
         const resp = await fetch(carGlbUrl);
         if (resp.ok) {
             const buf = await resp.arrayBuffer();
@@ -668,6 +669,20 @@ async function loadVehicleModelWithFallback(basePrefix) {
         // Fallback
     }
     return buildFallbackVehicleMesh();
+}
+
+async function loadRoadGraph(basePrefix) {
+    const candidates = [`${basePrefix}models/road_network.bin`, '../models/road_network.bin', './models/road_network.bin'];
+    for (const url of candidates) {
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) continue;
+            return parseRoadGraph(await resp.arrayBuffer());
+        } catch (err) {
+            console.warn(`[Traffic] road graph ${url}:`, err.message);
+        }
+    }
+    return null;
 }
 
 
@@ -875,6 +890,7 @@ async function main() {
     const elChunks = document.getElementById('hud-chunks');
     const elVerts = document.getElementById('hud-verts');
     const elPos = document.getElementById('hud-pos');
+    const elCars = document.getElementById('hud-cars');
     const elLoader = document.getElementById('loader-overlay');
     const elLoaderText = document.getElementById('loader-text');
     const elLoaderBar = document.getElementById('loader-bar');
@@ -971,7 +987,8 @@ async function main() {
         renderMode: 'all',
     };
 
-    // Allocate memory for dynamic simulated cars (50 cars x 24 B = 1,200 bytes at 0x9000)
+    // WASM corridor vehicle stream (50 cars x 24 B at 0x9000). Only drives the cars when
+    // models/road_network.bin is unavailable; otherwise web/traffic_sim.js follows the road graph.
     const MEM_CARS_PTR = 0x9000;
     const carsBaseFloat = MEM_CARS_PTR >> 2;
     for (let i = 0; i < state.carCount; i++) {
@@ -1075,10 +1092,30 @@ async function main() {
     const missingSectors = new Set();
     manifestInfo = await resolveSectorManifest();
 
-    loadVehicleModelWithFallback(manifestInfo ? manifestInfo.basePrefix : '../').then((vMesh) => {
-        if (renderer && renderer.uploadVehicleModel) {
-            renderer.uploadVehicleModel(vMesh);
+    const assetPrefix = manifestInfo ? manifestInfo.basePrefix : '../';
+    CAR_TYPES.forEach((typeName, typeIndex) => {
+        loadVehicleModelWithFallback(assetPrefix, typeName).then((vMesh) => {
+            if (renderer && renderer.uploadVehicleModel) {
+                renderer.uploadVehicleModel(vMesh, typeIndex);
+            }
+        });
+    });
+
+    // Road-graph traffic (port of src/car_system.c); cars stay on loaded macro-sectors
+    let trafficSim = null;
+    const fallbackInstances = new Float32Array(state.carCount * CAR_INSTANCE_FLOATS);
+    const fallbackTypeCounts = new Uint32Array(CAR_TYPES.length);
+    const fallbackTypeOffsets = new Uint32Array(CAR_TYPES.length);
+    loadRoadGraph(assetPrefix).then((graph) => {
+        if (!graph) {
+            console.warn('[Traffic] road_network.bin unavailable; using WASM corridor vehicles');
+            return;
         }
+        trafficSim = new TrafficSimulation(graph, state.carCount);
+        trafficSim.isDrivable = (x, z) => {
+            const macroSize = (manifestInfo && manifestInfo.manifest && manifestInfo.manifest.macro_size) || 1024.0;
+            return sectorCache.has(`${Math.floor(x / macroSize)}_${Math.floor(z / macroSize)}`);
+        };
     });
 
     function unloadSectorEntry(key) {
@@ -1380,9 +1417,8 @@ async function main() {
 
     document.getElementById('pause-toggle-cars')?.addEventListener('click', () => {
         state.carsEnabled = !state.carsEnabled;
-        const elCars = document.getElementById('hud-cars');
         if (elCars) {
-            elCars.textContent = state.carsEnabled ? `${state.carCount} activos` : 'Pausado';
+            elCars.textContent = state.carsEnabled ? `${trafficSim ? trafficSim.activeCount : state.carCount} activos` : 'Pausado';
             elCars.className = state.carsEnabled ? 'metric-good' : 'metric-warn';
         }
         logPause(`🚗 Simulación de tráfico: ${state.carsEnabled ? 'ACTIVADA' : 'DESACTIVADA'}`);
@@ -1566,6 +1602,14 @@ async function main() {
         }
     }
 
+    function vehicleFrame() {
+        if (trafficSim) {
+            return { instances: trafficSim.instances, typeCounts: trafficSim.typeCounts, typeOffsets: trafficSim.typeOffsets };
+        }
+        stageCorridorInstances(f32Mem, MEM_CARS_PTR, state.carCount, fallbackInstances, fallbackTypeCounts, fallbackTypeOffsets);
+        return { instances: fallbackInstances, typeCounts: fallbackTypeCounts, typeOffsets: fallbackTypeOffsets };
+    }
+
     function frameLoop(now) {
         const dt = Math.min(0.1, Math.max(0.0001, (now - lastTimestamp) / 1000.0));
         lastTimestamp = now;
@@ -1664,8 +1708,12 @@ async function main() {
         // Execute WASM deterministic traffic simulation tick
         if (!state.paused) {
             state.trafficPhase = wasm.traffic_tick(MEM_SIM_TIME_PTR, dt);
-            if (state.carsEnabled && wasm.update_vehicle_stream) {
-                wasm.update_vehicle_stream(MEM_CARS_PTR, state.carCount, dt, state.simSpeed);
+            if (state.carsEnabled) {
+                if (trafficSim) {
+                    trafficSim.update(dt, camX, camZ, state.trafficPhase);
+                } else if (wasm.update_vehicle_stream) {
+                    wasm.update_vehicle_stream(MEM_CARS_PTR, state.carCount, dt, state.simSpeed);
+                }
             }
         }
 
@@ -1748,7 +1796,7 @@ async function main() {
             cullFlagsBySector,
             cullingEnabled: state.cullingEnabled,
             renderMode: state.renderMode || 'all',
-            cars: state.carsEnabled ? { ptr: MEM_CARS_PTR, count: state.carCount, memory: f32Mem } : null,
+            vehicles: state.carsEnabled ? vehicleFrame() : null,
         });
 
         // Background nearby sector streaming check every 0.5s
@@ -1798,6 +1846,9 @@ async function main() {
             }
             if (elPos) {
                 elPos.textContent = `${camX.toFixed(1)}, ${camY.toFixed(1)}, ${camZ.toFixed(1)} | Yaw ${state.yaw.toFixed(1)}°`;
+            }
+            if (elCars && state.carsEnabled) {
+                elCars.textContent = `${trafficSim ? trafficSim.activeCount : state.carCount} activos`;
             }
         }
 
