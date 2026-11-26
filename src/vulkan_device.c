@@ -29,6 +29,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     return VK_FALSE;
 }
 
+/* Comprueba que todas las capas de validación solicitadas estén disponibles en la instancia. */
 static int check_validation_layer_support(void) {
     uint32_t layerCount = 0;
     vkEnumerateInstanceLayerProperties(&layerCount, NULL);
@@ -55,6 +56,7 @@ static int check_validation_layer_support(void) {
 }
 #endif
 
+/* Verifica que el dispositivo físico soporte la extensión VK_KHR_swapchain. */
 static int check_device_extension_support(VkPhysicalDevice device) {
     uint32_t extCount = 0;
     vkEnumerateDeviceExtensionProperties(device, NULL, &extCount, NULL);
@@ -73,6 +75,76 @@ static int check_device_extension_support(VkPhysicalDevice device) {
     }
     free(availableExts);
     return swapchainSupported;
+}
+
+/* Busca una familia de colas con soporte de gráficos y presentación KHR. */
+static uint32_t find_graphics_present_queue_family(VkPhysicalDevice dev, VkSurfaceKHR surface) {
+    uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, NULL);
+    if (queueFamilyCount == 0) return UINT32_MAX;
+
+    VkQueueFamilyProperties *queueFamilies = malloc(sizeof(VkQueueFamilyProperties) * queueFamilyCount);
+    if (!queueFamilies) return UINT32_MAX;
+    vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, queueFamilies);
+
+    uint32_t candidate = UINT32_MAX;
+    for (uint32_t q = 0; q < queueFamilyCount; q++) {
+        VkBool32 presentSupport = VK_FALSE;
+        vkGetPhysicalDeviceSurfaceSupportKHR(dev, q, surface, &presentSupport);
+        if ((queueFamilies[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentSupport) {
+            candidate = q;
+            break;
+        }
+    }
+    free(queueFamilies);
+    return candidate;
+}
+
+/* Selecciona el dispositivo físico Vulkan prioritando GPUs discretas. */
+static int select_physical_device(VulkanEngine *eng) {
+    uint32_t deviceCount = 0;
+    vkEnumeratePhysicalDevices(eng->instance, &deviceCount, NULL);
+    if (deviceCount == 0) {
+        fprintf(stderr, "No se encontraron GPUs con soporte para Vulkan\n");
+        return 0;
+    }
+
+    VkPhysicalDevice *devices = malloc(sizeof(VkPhysicalDevice) * deviceCount);
+    vkEnumeratePhysicalDevices(eng->instance, &deviceCount, devices);
+
+    uint32_t selectedQueueFamily = UINT32_MAX;
+    VkPhysicalDevice chosenDevice = VK_NULL_HANDLE;
+    int chosenIsDiscrete = 0;
+
+    for (uint32_t d = 0; d < deviceCount; d++) {
+        if (!check_device_extension_support(devices[d])) continue;
+        uint32_t candidateQueueFamily = find_graphics_present_queue_family(devices[d], eng->surface);
+        if (candidateQueueFamily == UINT32_MAX) continue;
+
+        VkPhysicalDeviceProperties candidateProps;
+        vkGetPhysicalDeviceProperties(devices[d], &candidateProps);
+        int isDiscrete = (candidateProps.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU);
+
+        if (chosenDevice == VK_NULL_HANDLE || (isDiscrete && !chosenIsDiscrete)) {
+            chosenDevice = devices[d];
+            selectedQueueFamily = candidateQueueFamily;
+            chosenIsDiscrete = isDiscrete;
+            if (chosenIsDiscrete) break;
+        }
+    }
+    free(devices);
+
+    if (chosenDevice == VK_NULL_HANDLE) {
+        fprintf(stderr, "No se encontró una GPU compatible con gráficos y presentación\n");
+        return 0;
+    }
+
+    eng->physicalDevice = chosenDevice;
+    eng->graphicsQueueFamily = selectedQueueFamily;
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(chosenDevice, &props);
+    snprintf(eng->gpuName, sizeof(eng->gpuName), "%s", props.deviceName);
+    return 1;
 }
 
 int init_vulkan_instance_and_device(VulkanEngine *eng, SDL_Window *window) {
@@ -145,68 +217,9 @@ int init_vulkan_instance_and_device(VulkanEngine *eng, SDL_Window *window) {
         return 0;
     }
 
-    uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices(eng->instance, &deviceCount, NULL);
-    if (deviceCount == 0) {
-        fprintf(stderr, "No se encontraron GPUs con soporte para Vulkan\n");
+    if (!select_physical_device(eng)) {
         return 0;
     }
-
-    VkPhysicalDevice *devices = malloc(sizeof(VkPhysicalDevice) * deviceCount);
-    vkEnumeratePhysicalDevices(eng->instance, &deviceCount, devices);
-
-    uint32_t selectedQueueFamily = UINT32_MAX;
-    VkPhysicalDevice chosenDevice = VK_NULL_HANDLE;
-    int chosenIsDiscrete = 0;
-
-    for (uint32_t d = 0; d < deviceCount; d++) {
-        if (!check_device_extension_support(devices[d])) continue;
-
-        uint32_t queueFamilyCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(devices[d], &queueFamilyCount, NULL);
-        if (queueFamilyCount == 0) continue;
-
-        VkQueueFamilyProperties *queueFamilies = malloc(sizeof(VkQueueFamilyProperties) * queueFamilyCount);
-        if (!queueFamilies) continue;
-        vkGetPhysicalDeviceQueueFamilyProperties(devices[d], &queueFamilyCount, queueFamilies);
-
-        uint32_t candidateQueueFamily = UINT32_MAX;
-        for (uint32_t q = 0; q < queueFamilyCount; q++) {
-            VkBool32 presentSupport = VK_FALSE;
-            vkGetPhysicalDeviceSurfaceSupportKHR(devices[d], q, eng->surface, &presentSupport);
-            if ((queueFamilies[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentSupport) {
-                candidateQueueFamily = q;
-                break;
-            }
-        }
-        free(queueFamilies);
-
-        if (candidateQueueFamily == UINT32_MAX) continue;
-
-        VkPhysicalDeviceProperties candidateProps;
-        vkGetPhysicalDeviceProperties(devices[d], &candidateProps);
-        int isDiscrete = (candidateProps.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU);
-
-        if (chosenDevice == VK_NULL_HANDLE || (isDiscrete && !chosenIsDiscrete)) {
-            chosenDevice = devices[d];
-            selectedQueueFamily = candidateQueueFamily;
-            chosenIsDiscrete = isDiscrete;
-            if (chosenIsDiscrete) break;
-        }
-    }
-    free(devices);
-
-    if (chosenDevice == VK_NULL_HANDLE) {
-        fprintf(stderr, "No se encontró una GPU compatible con gráficos y presentación\n");
-        return 0;
-    }
-
-    eng->physicalDevice = chosenDevice;
-    eng->graphicsQueueFamily = selectedQueueFamily;
-
-    VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(chosenDevice, &props);
-    snprintf(eng->gpuName, sizeof(eng->gpuName), "%s", props.deviceName);
 
     float queuePriority = 1.0f;
     VkDeviceQueueCreateInfo queueCreateInfo = {0};

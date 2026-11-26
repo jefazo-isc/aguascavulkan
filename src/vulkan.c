@@ -469,24 +469,62 @@ static void init_timestamp_query_pool(VulkanEngine *eng) {
     }
 }
 
+/* Reserva y mapea persistentemente los buffers de vértices del HUD por frame. */
+static void init_hud_vertex_buffers(VulkanEngine *eng) {
+    VkDeviceSize hudBufSize = DEBUG_MAX_VERTS * sizeof(Vertex);
+    VkBufferCreateInfo bi = {0};
+    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size = hudBufSize;
+    bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (vkCreateBuffer(eng->device, &bi, NULL, &eng->hudVertexBuffers[i]) != VK_SUCCESS) continue;
+        VkMemoryRequirements mr;
+        vkGetBufferMemoryRequirements(eng->device, eng->hudVertexBuffers[i], &mr);
+        VulkanSuballocation sub = vulkan_memory_pool_suballocate(&eng->hostVisiblePool, mr.size, mr.alignment);
+        if (sub.memory != VK_NULL_HANDLE) {
+            eng->hudVertexBufferMemories[i] = VK_NULL_HANDLE;
+            vkBindBufferMemory(eng->device, eng->hudVertexBuffers[i], sub.memory, sub.offset);
+            eng->hudMappedDatas[i] = (Vertex*)sub.mappedPtr;
+        }
+    }
+}
+
+/* Registra en el log el total de chunks activos para frustum culling. */
+static void log_active_chunks(const VulkanEngine *eng) {
+    if (!eng->chunksEnabled) return;
+    if (!eng->useSectorSystem) {
+        LOG_INFO("Motor", "Frustum culling ACTIVO (%d chunks de %.0fm)",
+                 eng->chunkSystem.chunkCount, eng->chunkSystem.chunkSize);
+        return;
+    }
+    int activeChunks = 0;
+    for (int s = 0; s < eng->sectorSystem.sectorCount; s++) {
+        const MacroSector *sec = &eng->sectorSystem.sectors[s];
+        if (!sec->isLoaded) continue;
+        activeChunks += (sec->chunkCount > 0) ? sec->chunkCount : 1;
+    }
+    LOG_INFO("Motor", "Frustum culling ACTIVO (%d chunks de %.0fm)",
+             activeChunks, eng->sectorSystem.chunkSize);
+}
+
 int vulkan_init(VulkanEngine *eng, SDL_Window *window) {
     memset(eng, 0, sizeof(VulkanEngine));
     eng->window = window;
 
     if (!init_vulkan_instance_and_device(eng, window)) return 0;
 
-    // --- Inicialización de Subasignadores de Memoria Vulkan Separados (Tier S #2) ---
     uint32_t vramType = find_memory_type(eng->physicalDevice, UINT32_MAX, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    uint32_t hostType = find_memory_type(eng->physicalDevice, UINT32_MAX, 
+    uint32_t hostType = find_memory_type(eng->physicalDevice, UINT32_MAX,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-    // Separamos pool de Buffers y pool de Imágenes para respetar bufferImageGranularity
     vulkan_memory_pool_init(&eng->vramBufferPool, eng->device, eng->physicalDevice, vramType,
-                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 64 * 1024 * 1024); // 64 MB por bloque
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 64 * 1024 * 1024);
     vulkan_memory_pool_init(&eng->vramImagePool, eng->device, eng->physicalDevice, vramType,
-                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 64 * 1024 * 1024); // 64 MB por bloque
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 64 * 1024 * 1024);
     vulkan_memory_pool_init(&eng->hostVisiblePool, eng->device, eng->physicalDevice, hostType,
-                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 16 * 1024 * 1024); // 16 MB por bloque
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 16 * 1024 * 1024);
 
     if (!create_swapchain_and_depth(eng)) goto fail_cleanup;
     if (!create_render_pass(eng)) goto fail_cleanup;
@@ -496,7 +534,6 @@ int vulkan_init(VulkanEngine *eng, SDL_Window *window) {
     init_timestamp_query_pool(eng);
     SDL_PumpEvents();
 
-    // Cargar satélite
     const char* texFile = "assets/satellite.png";
     if (!init_satellite_texture(eng, texFile)) {
         LOG_ERROR("Motor", "Fallo inicializando textura satelital y descriptores (%s).", texFile);
@@ -504,23 +541,17 @@ int vulkan_init(VulkanEngine *eng, SDL_Window *window) {
     }
     SDL_PumpEvents();
 
-    // Iniciar sistema de tráfico dinámico antes de cargar geometría para desacoplar lentes en GPU
     traffic_system_init(&eng->trafficSystem);
     traffic_system_load_json(&eng->trafficSystem, "models/traffic_signals.json");
     SDL_PumpEvents();
 
-    // Cargar geometría (extrae lentes y libera búfer CPU antes de subir a VRAM)
     if (!load_primary_geometry(eng)) goto fail_cleanup;
     SDL_PumpEvents();
 
-    // Iniciar sistema de iluminación dinámica (farolas viales, semáforos, linterna)
     lighting_system_init(&eng->lightingSystem, &eng->trafficSystem);
-
-    // Iniciar sistema cinemático de coches (mallas en VRAM pura DEVICE_LOCAL)
     car_system_init(&eng->carSystem, eng->device, eng->physicalDevice, eng->commandPool, eng->graphicsQueue);
     SDL_PumpEvents();
 
-    // Cargar sistema de chunks para frustum culling
     if (eng->useSectorSystem) {
         eng->chunksEnabled = 1;
     } else {
@@ -533,60 +564,16 @@ int vulkan_init(VulkanEngine *eng, SDL_Window *window) {
         }
     }
 
-    // Crear HUD vertex buffers para debug overlay por frame en vuelo (mapeados persistentemente)
-    {
-        VkDeviceSize hudBufSize = DEBUG_MAX_VERTS * sizeof(Vertex);
-        VkBufferCreateInfo bi = {0};
-        bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bi.size = hudBufSize;
-        bi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            if (vkCreateBuffer(eng->device, &bi, NULL, &eng->hudVertexBuffers[i]) == VK_SUCCESS) {
-                VkMemoryRequirements mr;
-                vkGetBufferMemoryRequirements(eng->device, eng->hudVertexBuffers[i], &mr);
-                VulkanSuballocation sub = vulkan_memory_pool_suballocate(&eng->hostVisiblePool, mr.size, mr.alignment);
-                if (sub.memory != VK_NULL_HANDLE) {
-                    eng->hudVertexBufferMemories[i] = VK_NULL_HANDLE; // Perteneciente al pool central
-                    vkBindBufferMemory(eng->device, eng->hudVertexBuffers[i], sub.memory, sub.offset);
-                    eng->hudMappedDatas[i] = (Vertex*)sub.mappedPtr;
-                }
-            }
-        }
-    }
+    init_hud_vertex_buffers(eng);
     eng->currentFps = 60.0f;
-
-    // Inicializar estado de pausa y testing
-    eng->isPaused = 0;
-    eng->pauseMenuIndex = 0;
+    eng->simHour = 14.0f;
     eng->timeScale = 1.0f;
-    eng->timeScaleIndex = 0;
-    eng->simHour = 14.0f; /* 14:00 hrs: luz diurna plena por defecto */
-    eng->timeFrozen = 0;
     eng->showTelemetry = 1;
     eng->cullingEnabled = eng->chunksEnabled;
-    eng->timePresetIndex = 0;
     eng->camSpeedIndex = 1;
-    eng->trafficSignalMode = 0;
-    eng->notificationTimer = 0.0f;
 
     LOG_INFO("Motor", "StreetVulkan inicializado con éxito. Vértices activos: %zu", eng->vertexCount);
-    if (eng->chunksEnabled) {
-        if (eng->useSectorSystem) {
-            int activeChunks = 0;
-            for (int s = 0; s < eng->sectorSystem.sectorCount; s++) {
-                MacroSector *sec = &eng->sectorSystem.sectors[s];
-                if (!sec->isLoaded) continue;
-                activeChunks += (sec->chunkCount > 0) ? sec->chunkCount : 1;
-            }
-            LOG_INFO("Motor", "Frustum culling ACTIVO (%d chunks de %.0fm)",
-                     activeChunks, eng->sectorSystem.chunkSize);
-        } else {
-            LOG_INFO("Motor", "Frustum culling ACTIVO (%d chunks de %.0fm)",
-                     eng->chunkSystem.chunkCount, eng->chunkSystem.chunkSize);
-        }
-    }
+    log_active_chunks(eng);
     return 1;
 
 fail_cleanup:

@@ -235,49 +235,38 @@ static void build_procedural_lens_quad(Vertex q[6], const TrafficSignal* sig, fl
     q[5] = v; q[5].x = hx - px; q[5].y = hy + rad; q[5].z = hz - pz;
 }
 
-int traffic_system_init_gpu(TrafficSystem* sys, VulkanEngine* eng, const Vertex* initialVertexData, size_t totalVertices) {
-    if (!sys || sys->signalCount == 0 || !eng) return 0;
-
-    // 1. Calcular total de vértices requeridos para los lentes
-    size_t totalLensVerts = 0;
-    for (size_t s = 0; s < sys->signalCount; ++s) {
-        TrafficSignal* sig = &sys->signals[s];
-        sig->redLens.localOffset = totalLensVerts;
-        size_t rc = sig->redLens.vertexCount > 0 ? sig->redLens.vertexCount : 6;
-        totalLensVerts += rc;
-
-        sig->amberLens.localOffset = totalLensVerts;
-        size_t ac = sig->amberLens.vertexCount > 0 ? sig->amberLens.vertexCount : 6;
-        totalLensVerts += ac;
-
-        sig->greenLens.localOffset = totalLensVerts;
-        size_t gc = sig->greenLens.vertexCount > 0 ? sig->greenLens.vertexCount : 6;
-        totalLensVerts += gc;
-    }
-
-    sys->totalLensVertices = totalLensVerts;
-    sys->lensTemplateVertices = calloc(totalLensVerts, sizeof(Vertex));
-    if (!sys->lensTemplateVertices) return 0;
-
-    // 2. Extraer vértices de lentes de la malla estática o generarlos proceduralmente
+/* Asigna offsets locales contiguos para los 3 lentes de cada semáforo. */
+static size_t assign_lens_offsets(TrafficSystem* sys) {
+    size_t total = 0;
     for (size_t s = 0; s < sys->signalCount; ++s) {
         TrafficSignal* sig = &sys->signals[s];
         TrafficLens* lenses[3] = { &sig->redLens, &sig->amberLens, &sig->greenLens };
-        float colors[3][3] = {
-            { 1.0f, 0.04f, 0.04f },  // Rojo
-            { 1.0f, 0.65f, 0.0f },   // Ámbar
-            { 0.0f, 1.0f, 0.35f }    // Verde
-        };
-        float offsetsY[3] = { 0.30f, 0.0f, -0.30f };
+        for (int l = 0; l < 3; ++l) {
+            lenses[l]->localOffset = total;
+            total += (lenses[l]->vertexCount > 0) ? lenses[l]->vertexCount : 6;
+        }
+    }
+    return total;
+}
 
+/* Construye la plantilla CPU de lentes (extraídos de malla o quads procedurales). */
+static void populate_lens_template(TrafficSystem* sys, const Vertex* initialVertexData, size_t totalVertices) {
+    static const float colors[3][3] = {
+        { 1.0f, 0.04f, 0.04f },
+        { 1.0f, 0.65f, 0.0f },
+        { 0.0f, 1.0f, 0.35f }
+    };
+    static const float offsetsY[3] = { 0.30f, 0.0f, -0.30f };
+
+    for (size_t s = 0; s < sys->signalCount; ++s) {
+        TrafficSignal* sig = &sys->signals[s];
+        TrafficLens* lenses[3] = { &sig->redLens, &sig->amberLens, &sig->greenLens };
         for (int l = 0; l < 3; ++l) {
             TrafficLens* lens = lenses[l];
             size_t count = lens->vertexCount > 0 ? lens->vertexCount : 6;
-
             if (lens->vertexCount > 0 && initialVertexData && (lens->vertexStartIndex + count <= totalVertices)) {
                 for (size_t v = 0; v < count; ++v) {
                     Vertex vert = initialVertexData[lens->vertexStartIndex + v];
-                    // Ligero desplazamiento según la normal (+3mm) para eliminar z-fighting con la carcasa estática
                     vert.x += vert.nx * 0.003f;
                     vert.y += vert.ny * 0.003f;
                     vert.z += vert.nz * 0.003f;
@@ -288,18 +277,25 @@ int traffic_system_init_gpu(TrafficSystem* sys, VulkanEngine* eng, const Vertex*
                     sys->lensTemplateVertices[lens->localOffset + v] = vert;
                 }
             } else {
-                // Fallback procedural: generar quad de 2 triángulos orientado según el eje de fase
                 Vertex q[6];
                 build_procedural_lens_quad(q, sig, sig->y + offsetsY[l], colors[l]);
-                for (int k = 0; k < 6; ++k) {
-                    sys->lensTemplateVertices[lens->localOffset + k] = q[k];
-                }
+                memcpy(&sys->lensTemplateVertices[lens->localOffset], q, 6 * sizeof(Vertex));
                 lens->vertexCount = 6;
             }
         }
     }
+}
 
-    // 3. Crear los buffers dinámicos en hostVisiblePool (uno por frame in flight)
+int traffic_system_init_gpu(TrafficSystem* sys, VulkanEngine* eng, const Vertex* initialVertexData, size_t totalVertices) {
+    if (!sys || sys->signalCount == 0 || !eng) return 0;
+
+    size_t totalLensVerts = assign_lens_offsets(sys);
+    sys->totalLensVertices = totalLensVerts;
+    sys->lensTemplateVertices = calloc(totalLensVerts, sizeof(Vertex));
+    if (!sys->lensTemplateVertices) return 0;
+
+    populate_lens_template(sys, initialVertexData, totalVertices);
+
     VkDeviceSize bufSize = totalLensVerts * sizeof(Vertex);
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         VkBufferCreateInfo bi = {
@@ -313,12 +309,8 @@ int traffic_system_init_gpu(TrafficSystem* sys, VulkanEngine* eng, const Vertex*
             return 0;
         }
         VulkanSuballocation sub;
-        if (!vulkan_memory_pool_bind_buffer(&eng->hostVisiblePool, sys->lensBuffers[i], &sub)) {
+        if (!vulkan_memory_pool_bind_buffer(&eng->hostVisiblePool, sys->lensBuffers[i], &sub) || !sub.mappedPtr) {
             fprintf(stderr, "[Tráfico GPU] Error vinculando buffer de lentes %d a hostVisiblePool\n", i);
-            return 0;
-        }
-        if (!sub.mappedPtr) {
-            fprintf(stderr, "[Tráfico GPU] Error: sub.mappedPtr es nulo para buffer de lentes %d\n", i);
             return 0;
         }
         sys->mappedLensDatas[i] = (Vertex*)sub.mappedPtr;
@@ -346,75 +338,48 @@ void traffic_system_free_gpu(TrafficSystem* sys, VkDevice device) {
     sys->totalLensVertices = 0;
 }
 
+/* Avanza el temporizador y la máquina de 6 fases de una intersección. */
+static void step_intersection_phase(TrafficIntersection* in, float deltaTime) {
+    const float durations[6] = {
+        in->greenDuration, in->amberDuration, in->allRedDuration,
+        in->greenDuration, in->amberDuration, in->allRedDuration
+    };
+    in->timer += deltaTime;
+    int phase = in->currentPhase;
+    if (phase < 0 || phase >= 6) {
+        in->currentPhase = 0;
+        in->timer = 0.0f;
+        return;
+    }
+    if (in->timer >= durations[phase]) {
+        in->currentPhase = (phase + 1) % 6;
+        in->timer = 0.0f;
+    }
+}
+
+static TrafficLightState resolve_signal_light_state(int phaseGroup, int currentPhase) {
+    if (phaseGroup == 0) {
+        if (currentPhase == 0) return TRAFFIC_LIGHT_GREEN;
+        if (currentPhase == 1) return TRAFFIC_LIGHT_AMBER;
+        return TRAFFIC_LIGHT_RED;
+    }
+    if (currentPhase == 3) return TRAFFIC_LIGHT_GREEN;
+    if (currentPhase == 4) return TRAFFIC_LIGHT_AMBER;
+    return TRAFFIC_LIGHT_RED;
+}
+
 void traffic_system_update_simulation(TrafficSystem* sys, float deltaTime) {
     if (!sys || sys->intersectionCount == 0) return;
 
-    // 1. Actualizar temporizadores y fases de intersecciones (Lógica determinista de 6 fases)
     for (size_t i = 0; i < sys->intersectionCount; ++i) {
-        TrafficIntersection* in = &sys->intersections[i];
-        in->timer += deltaTime;
-
-        switch (in->currentPhase) {
-            case 0: // NS Verde, EO Rojo
-                if (in->timer >= in->greenDuration) {
-                    in->currentPhase = 1;
-                    in->timer = 0.0f;
-                }
-                break;
-            case 1: // NS Ámbar, EO Rojo
-                if (in->timer >= in->amberDuration) {
-                    in->currentPhase = 2;
-                    in->timer = 0.0f;
-                }
-                break;
-            case 2: // Todo Rojo (Seguridad)
-                if (in->timer >= in->allRedDuration) {
-                    in->currentPhase = 3;
-                    in->timer = 0.0f;
-                }
-                break;
-            case 3: // EO Verde, NS Rojo
-                if (in->timer >= in->greenDuration) {
-                    in->currentPhase = 4;
-                    in->timer = 0.0f;
-                }
-                break;
-            case 4: // EO Ámbar, NS Rojo
-                if (in->timer >= in->amberDuration) {
-                    in->currentPhase = 5;
-                    in->timer = 0.0f;
-                }
-                break;
-            case 5: // Todo Rojo (Seguridad)
-                if (in->timer >= in->allRedDuration) {
-                    in->currentPhase = 0;
-                    in->timer = 0.0f;
-                }
-                break;
-            default:
-                in->currentPhase = 0;
-                in->timer = 0.0f;
-                break;
-        }
+        step_intersection_phase(&sys->intersections[i], deltaTime);
     }
 
-    // 2. Resolver estado lógico de cada semáforo según su intersección (O(1) con índice cacheado)
     for (size_t s = 0; s < sys->signalCount; ++s) {
         TrafficSignal* sig = &sys->signals[s];
         TrafficIntersection* in = resolve_signal_intersection(sys, sig);
         if (!in) continue;
-
-        TrafficLightState currentLight = TRAFFIC_LIGHT_RED;
-        if (sig->phaseGroup == 0) { // Eje Norte-Sur
-            if (in->currentPhase == 0) currentLight = TRAFFIC_LIGHT_GREEN;
-            else if (in->currentPhase == 1) currentLight = TRAFFIC_LIGHT_AMBER;
-            else currentLight = TRAFFIC_LIGHT_RED;
-        } else { // Eje Este-Oeste
-            if (in->currentPhase == 3) currentLight = TRAFFIC_LIGHT_GREEN;
-            else if (in->currentPhase == 4) currentLight = TRAFFIC_LIGHT_AMBER;
-            else currentLight = TRAFFIC_LIGHT_RED;
-        }
-        sig->currentState = currentLight;
+        sig->currentState = resolve_signal_light_state(sig->phaseGroup, in->currentPhase);
     }
 }
 

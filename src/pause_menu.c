@@ -172,106 +172,58 @@ int pause_menu_handle_hotkeys(VulkanEngine *eng, SDL_Keycode key) {
     }
 }
 
-void pause_menu_handle_key(VulkanEngine *eng, SDL_Keycode key, int *outRunning) {
+static void pause_menu_adjust_item(VulkanEngine *eng, int delta, int isActivate, int *outRunning) {
     static int s_tp = 0;
-    if (!eng->isPaused) return;
+    int step = (delta != 0) ? delta : 1;
 
+    switch (eng->pauseMenuIndex) {
+        case MENU_RESUME:
+            if (isActivate) {
+                eng->isPaused = 0;
+                g_camera.mouseCaptured = 1;
+                SDL_SetRelativeMouseMode(SDL_TRUE);
+                pause_menu_notify(eng, "Simulacion Reanudada");
+            }
+            break;
+        case MENU_TIME_SCALE:   pause_menu_cycle_time_scale(eng, step); break;
+        case MENU_TIME_PRESET:
+            eng->timePresetIndex = (eng->timePresetIndex + step + NUM_TIME_PRESETS) % NUM_TIME_PRESETS;
+            pause_menu_apply_time_preset(eng, eng->timePresetIndex);
+            break;
+        case MENU_HOUR_STEP:    pause_menu_adjust_hour(eng, isActivate ? 1.0f : (0.5f * (float)step)); break;
+        case MENU_TIME_FREEZE:  pause_menu_toggle_time_freeze(eng); break;
+        case MENU_TELEPORT:
+            s_tp = (s_tp + step + NUM_TELEPORT_TARGETS) % NUM_TELEPORT_TARGETS;
+            pause_menu_apply_teleport(eng, s_tp);
+            break;
+        case MENU_CULLING:      pause_menu_toggle_culling(eng); break;
+        case MENU_TELEMETRY:    pause_menu_toggle_telemetry(eng); break;
+        case MENU_CAM_SPEED:    pause_menu_cycle_cam_speed(eng, step); break;
+        case MENU_TRAFFIC_MODE: pause_menu_cycle_traffic_mode(eng, step); break;
+        case MENU_FLASHLIGHT:   pause_menu_toggle_flashlight(eng); break;
+        case MENU_QUIT:
+            if (isActivate && outRunning) *outRunning = 0;
+            break;
+        default: break;
+    }
+}
+
+void pause_menu_handle_key(VulkanEngine *eng, SDL_Keycode key, int *outRunning) {
+    if (!eng->isPaused) return;
     if (pause_menu_handle_hotkeys(eng, key)) return;
 
-    switch (key) {
-        case SDLK_UP:
-        case SDLK_w:
-            eng->pauseMenuIndex = (eng->pauseMenuIndex - 1 + MENU_COUNT) % MENU_COUNT;
-            break;
-        case SDLK_DOWN:
-        case SDLK_s:
-            eng->pauseMenuIndex = (eng->pauseMenuIndex + 1) % MENU_COUNT;
-            break;
-
-        case SDLK_LEFT:
-        case SDLK_a:
-            switch (eng->pauseMenuIndex) {
-                case MENU_TIME_SCALE:   pause_menu_cycle_time_scale(eng, -1); break;
-                case MENU_TIME_PRESET:
-                    eng->timePresetIndex = (eng->timePresetIndex - 1 + NUM_TIME_PRESETS) % NUM_TIME_PRESETS;
-                    pause_menu_apply_time_preset(eng, eng->timePresetIndex);
-                    break;
-                case MENU_HOUR_STEP:    pause_menu_adjust_hour(eng, -0.5f); break;
-                case MENU_TIME_FREEZE:  pause_menu_toggle_time_freeze(eng); break;
-                case MENU_TELEPORT:
-                    s_tp = (s_tp - 1 + NUM_TELEPORT_TARGETS) % NUM_TELEPORT_TARGETS;
-                    pause_menu_apply_teleport(eng, s_tp);
-                    break;
-                case MENU_CULLING:      pause_menu_toggle_culling(eng); break;
-                case MENU_TELEMETRY:    pause_menu_toggle_telemetry(eng); break;
-                case MENU_CAM_SPEED:    pause_menu_cycle_cam_speed(eng, -1); break;
-                case MENU_TRAFFIC_MODE: pause_menu_cycle_traffic_mode(eng, -1); break;
-                case MENU_FLASHLIGHT:   pause_menu_toggle_flashlight(eng); break;
-                default: break;
-            }
-            break;
-
-        case SDLK_RIGHT:
-        case SDLK_d:
-            switch (eng->pauseMenuIndex) {
-                case MENU_TIME_SCALE:   pause_menu_cycle_time_scale(eng, +1); break;
-                case MENU_TIME_PRESET:
-                    eng->timePresetIndex = (eng->timePresetIndex + 1) % NUM_TIME_PRESETS;
-                    pause_menu_apply_time_preset(eng, eng->timePresetIndex);
-                    break;
-                case MENU_HOUR_STEP:    pause_menu_adjust_hour(eng, +0.5f); break;
-                case MENU_TIME_FREEZE:  pause_menu_toggle_time_freeze(eng); break;
-                case MENU_TELEPORT:
-                    s_tp = (s_tp + 1) % NUM_TELEPORT_TARGETS;
-                    pause_menu_apply_teleport(eng, s_tp);
-                    break;
-                case MENU_CULLING:      pause_menu_toggle_culling(eng); break;
-                case MENU_TELEMETRY:    pause_menu_toggle_telemetry(eng); break;
-                case MENU_CAM_SPEED:    pause_menu_cycle_cam_speed(eng, +1); break;
-                case MENU_TRAFFIC_MODE: pause_menu_cycle_traffic_mode(eng, +1); break;
-                case MENU_FLASHLIGHT:   pause_menu_toggle_flashlight(eng); break;
-                default: break;
-            }
-            break;
-
-        case SDLK_RETURN:
-        case SDLK_KP_ENTER:
-        case SDLK_SPACE:
-            switch (eng->pauseMenuIndex) {
-                case MENU_RESUME:
-                    eng->isPaused = 0;
-                    g_camera.mouseCaptured = 1;
-                    SDL_SetRelativeMouseMode(SDL_TRUE);
-                    pause_menu_notify(eng, "Simulacion Reanudada");
-                    break;
-                case MENU_TIME_SCALE:   pause_menu_cycle_time_scale(eng, +1); break;
-                case MENU_TIME_PRESET:
-                    eng->timePresetIndex = (eng->timePresetIndex + 1) % NUM_TIME_PRESETS;
-                    pause_menu_apply_time_preset(eng, eng->timePresetIndex);
-                    break;
-                case MENU_HOUR_STEP:    pause_menu_adjust_hour(eng, +1.0f); break;
-                case MENU_TIME_FREEZE:  pause_menu_toggle_time_freeze(eng); break;
-                case MENU_TELEPORT:
-                    s_tp = (s_tp + 1) % NUM_TELEPORT_TARGETS;
-                    pause_menu_apply_teleport(eng, s_tp);
-                    break;
-                case MENU_CULLING:      pause_menu_toggle_culling(eng); break;
-                case MENU_TELEMETRY:    pause_menu_toggle_telemetry(eng); break;
-                case MENU_CAM_SPEED:    pause_menu_cycle_cam_speed(eng, +1); break;
-                case MENU_TRAFFIC_MODE: pause_menu_cycle_traffic_mode(eng, +1); break;
-                case MENU_FLASHLIGHT:   pause_menu_toggle_flashlight(eng); break;
-                case MENU_QUIT:
-                    if (outRunning) *outRunning = 0;
-                    break;
-                default: break;
-            }
-            break;
-
-        case SDLK_q:
-            if (outRunning) *outRunning = 0;
-            break;
-
-        default: break;
+    if (key == SDLK_UP || key == SDLK_w) {
+        eng->pauseMenuIndex = (eng->pauseMenuIndex - 1 + MENU_COUNT) % MENU_COUNT;
+    } else if (key == SDLK_DOWN || key == SDLK_s) {
+        eng->pauseMenuIndex = (eng->pauseMenuIndex + 1) % MENU_COUNT;
+    } else if (key == SDLK_LEFT || key == SDLK_a) {
+        pause_menu_adjust_item(eng, -1, 0, outRunning);
+    } else if (key == SDLK_RIGHT || key == SDLK_d) {
+        pause_menu_adjust_item(eng, +1, 0, outRunning);
+    } else if (key == SDLK_RETURN || key == SDLK_KP_ENTER || key == SDLK_SPACE) {
+        pause_menu_adjust_item(eng, +1, 1, outRunning);
+    } else if (key == SDLK_q && outRunning) {
+        *outRunning = 0;
     }
 }
 
@@ -306,16 +258,125 @@ void pause_menu_render_notification(DebugOverlay *ov, VulkanEngine *eng) {
     debug_overlay_add_text(ov, nx + 16.0f, ny + 9.0f, eng->notificationText, 2.0f, 1.0f, 0.95f, 0.35f);
 }
 
+static void pause_menu_format_item(const VulkanEngine *eng, int idx, int hours, int mins,
+                                   char *lineLabel, size_t labelSz, char *lineValue, size_t valSz) {
+    static const char *sModes[] = {"Automatico", "Todos Verde", "Todos Rojo"};
+    switch (idx) {
+        case MENU_RESUME:
+            snprintf(lineLabel, labelSz, "1. Reanudar Simulacion");
+            snprintf(lineValue, valSz, "[ESC / P]");
+            break;
+        case MENU_TIME_SCALE:
+            snprintf(lineLabel, labelSz, "2. Velocidad de Tiempo");
+            snprintf(lineValue, valSz, "< %s >", g_timeSpeeds[eng->timeScaleIndex].label);
+            break;
+        case MENU_TIME_PRESET:
+            snprintf(lineLabel, labelSz, "3. Fijar Hora del Dia");
+            snprintf(lineValue, valSz, "< %s >", g_timePresets[eng->timePresetIndex].name);
+            break;
+        case MENU_HOUR_STEP:
+            snprintf(lineLabel, labelSz, "4. Ajustar Hora (+/-)");
+            snprintf(lineValue, valSz, "< %02d:%02d hrs >  [[ / ]]", hours, mins);
+            break;
+        case MENU_TIME_FREEZE:
+            snprintf(lineLabel, labelSz, "5. Congelar Avance Solar");
+            snprintf(lineValue, valSz, "[ %s ]  [Y]", eng->timeFrozen ? "SI (FIJO)" : "NO (AVANZA)");
+            break;
+        case MENU_TELEPORT:
+            snprintf(lineLabel, labelSz, "6. Teletransporte Rapido");
+            snprintf(lineValue, valSz, "< Puntos POI [F1-F6] >");
+            break;
+        case MENU_CULLING:
+            snprintf(lineLabel, labelSz, "7. Frustum Culling");
+            snprintf(lineValue, valSz, "[ %s ]  [F5]", eng->cullingEnabled ? "ACTIVADO" : "DESACTIVADO");
+            break;
+        case MENU_TELEMETRY:
+            snprintf(lineLabel, labelSz, "8. Telemetria ISO 25010");
+            snprintf(lineValue, valSz, "[ %s ]  [F8]", eng->showTelemetry ? "VISIBLE" : "OCULTO");
+            break;
+        case MENU_CAM_SPEED:
+            snprintf(lineLabel, labelSz, "9. Velocidad de Camara");
+            snprintf(lineValue, valSz, "< %s >", g_camSpeeds[eng->camSpeedIndex].name);
+            break;
+        case MENU_TRAFFIC_MODE:
+            snprintf(lineLabel, labelSz, "10. Modo Semaforos");
+            snprintf(lineValue, valSz, "< %s >", sModes[eng->trafficSignalMode]);
+            break;
+        case MENU_FLASHLIGHT:
+            snprintf(lineLabel, labelSz, "11. Linterna Frontal");
+            snprintf(lineValue, valSz, "[ %s ]  [F / L]",
+                     eng->lightingSystem.flashlightEnabled ? "ACTIVADA" : "DESACTIVADA");
+            break;
+        case MENU_QUIT:
+            snprintf(lineLabel, labelSz, "12. Salir del Motor");
+            snprintf(lineValue, valSz, "[Q / Salir]");
+            break;
+        default: break;
+    }
+}
+
+/* Dibuja el marco, título y barra de estado del panel de pausa. */
+static void pause_menu_render_header(DebugOverlay *ov, const VulkanEngine *eng,
+                                     float px, float py, float panelW, float panelH,
+                                     int hours, int mins) {
+    debug_overlay_add_rect_z(ov, px, py, panelW, panelH, 0.05f, 0.08f, 0.14f, 0.0025f);
+    debug_overlay_add_rect_z(ov, px, py, panelW, 3.0f, 0.0f, 0.85f, 1.0f, 0.0018f);
+    debug_overlay_add_rect_z(ov, px, py + panelH - 3.0f, panelW, 3.0f, 0.0f, 0.55f, 0.85f, 0.0018f);
+    debug_overlay_add_rect_z(ov, px, py, 3.0f, panelH, 0.0f, 0.85f, 1.0f, 0.0018f);
+    debug_overlay_add_rect_z(ov, px + panelW - 3.0f, py, 3.0f, panelH, 0.0f, 0.85f, 1.0f, 0.0018f);
+
+    debug_overlay_add_text(ov, px + 22.0f, py + 14.0f, "=== STREETVULKAN: PAUSA & TESTING ===", 2.2f, 0.0f, 0.90f, 1.0f);
+
+    const char *phase = "Noche";
+    if (hours >= 6 && hours < 8) phase = "Amanecer";
+    else if (hours >= 8 && hours <= 16) phase = "Dia";
+    else if (hours > 16 && hours < 18) phase = "Atardecer";
+
+    char statusBuf[128];
+    snprintf(statusBuf, sizeof(statusBuf), "Hora: %02d:%02d (%s) | Vel: %.1fx | FPS: %.0f | %s",
+             hours, mins, phase, eng->timeScale, eng->currentFps,
+             eng->timeFrozen ? "SOL CONGELADO" : "TIEMPO ACTIVO");
+    debug_overlay_add_text(ov, px + 22.0f, py + 38.0f, statusBuf, 1.8f, 1.0f, 0.85f, 0.35f);
+    debug_overlay_add_rect_z(ov, px + 18.0f, py + 56.0f, panelW - 36.0f, 2.0f, 0.18f, 0.32f, 0.48f, 0.0020f);
+}
+
+/* Dibuja la lista de opciones interactivas del menú de pausa. */
+static void pause_menu_render_items(DebugOverlay *ov, const VulkanEngine *eng,
+                                    float px, float py, float panelW, int hours, int mins) {
+    float itemStartY = py + 66.0f;
+    float itemH = 29.0f;
+    float textScale = 1.9f;
+
+    for (int i = 0; i < MENU_COUNT; i++) {
+        float iy = itemStartY + (float)i * itemH;
+        int isSelected = (i == eng->pauseMenuIndex);
+        if (isSelected) {
+            debug_overlay_add_rect_z(ov, px + 14.0f, iy - 2.0f, panelW - 28.0f, itemH - 2.0f,
+                                     0.12f, 0.24f, 0.42f, 0.0016f);
+        }
+        debug_overlay_add_text(ov, px + 22.0f, iy + 4.0f, isSelected ? ">>" : "  ", textScale,
+                               isSelected ? 1.0f : 0.5f, isSelected ? 0.92f : 0.5f, isSelected ? 0.20f : 0.5f);
+
+        char lineLabel[64] = {0};
+        char lineValue[64] = {0};
+        pause_menu_format_item(eng, i, hours, mins, lineLabel, sizeof(lineLabel), lineValue, sizeof(lineValue));
+
+        debug_overlay_add_text(ov, px + 44.0f, iy + 4.0f, lineLabel, textScale,
+                               isSelected ? 1.0f : 0.78f, isSelected ? 1.0f : 0.84f, isSelected ? 1.0f : 0.90f);
+        debug_overlay_add_text(ov, px + 310.0f, iy + 4.0f, lineValue, textScale,
+                               isSelected ? 1.0f : 0.35f, isSelected ? 0.92f : 0.85f, isSelected ? 0.30f : 0.95f);
+    }
+}
+
 void pause_menu_render(DebugOverlay *ov, VulkanEngine *eng) {
     if (!eng->isPaused) return;
 
     float screenW = ov->screenW;
     float screenH = ov->screenH;
 
-    /* 1. Telón de fondo oscuro translúcido */
+    /* Telón de fondo oscuro translúcido */
     debug_overlay_add_rect_z(ov, 0, 0, screenW, screenH, 0.015f, 0.025f, 0.045f, 0.0035f);
 
-    /* 2. Dimensiones y centrado de la ventana del menú */
     float panelW = 580.0f;
     float panelH = 480.0f;
     float px = (screenW - panelW) * 0.5f;
@@ -327,125 +388,18 @@ void pause_menu_render(DebugOverlay *ov, VulkanEngine *eng) {
     if (px < 10.0f) px = 10.0f;
     if (py < 10.0f) py = 10.0f;
 
-    /* Fondo del panel */
-    debug_overlay_add_rect_z(ov, px, py, panelW, panelH, 0.05f, 0.08f, 0.14f, 0.0025f);
-
-    /* Marco perimetral */
-    debug_overlay_add_rect_z(ov, px, py, panelW, 3.0f, 0.0f, 0.85f, 1.0f, 0.0018f);
-    debug_overlay_add_rect_z(ov, px, py + panelH - 3.0f, panelW, 3.0f, 0.0f, 0.55f, 0.85f, 0.0018f);
-    debug_overlay_add_rect_z(ov, px, py, 3.0f, panelH, 0.0f, 0.85f, 1.0f, 0.0018f);
-    debug_overlay_add_rect_z(ov, px + panelW - 3.0f, py, 3.0f, panelH, 0.0f, 0.85f, 1.0f, 0.0018f);
-
-    /* 3. Encabezado */
-    float scaleTitle = 2.2f;
-    debug_overlay_add_text(ov, px + 22.0f, py + 14.0f, "=== STREETVULKAN: PAUSA & TESTING ===", scaleTitle, 0.0f, 0.90f, 1.0f);
-
     int hours = (int)eng->simHour;
     int mins  = (int)((eng->simHour - (float)hours) * 60.0f);
-    const char *phase = (hours >= 6 && hours < 18) ? ((hours < 8) ? "Amanecer" : (hours > 16) ? "Atardecer" : "Dia") : "Noche";
 
-    char statusBuf[128];
-    snprintf(statusBuf, sizeof(statusBuf), "Hora: %02d:%02d (%s) | Vel: %.1fx | FPS: %.0f | %s",
-             hours, mins, phase, eng->timeScale, eng->currentFps,
-             eng->timeFrozen ? "SOL CONGELADO" : "TIEMPO ACTIVO");
-    debug_overlay_add_text(ov, px + 22.0f, py + 38.0f, statusBuf, 1.8f, 1.0f, 0.85f, 0.35f);
+    pause_menu_render_header(ov, eng, px, py, panelW, panelH, hours, mins);
+    pause_menu_render_items(ov, eng, px, py, panelW, hours, mins);
 
-    debug_overlay_add_rect_z(ov, px + 18.0f, py + 56.0f, panelW - 36.0f, 2.0f, 0.18f, 0.32f, 0.48f, 0.0020f);
-
-    /* 4. Lista de opciones */
-    float itemStartY = py + 66.0f;
-    float itemH = 29.0f;
-    float textScale = 1.9f;
-
-    for (int i = 0; i < MENU_COUNT; i++) {
-        float iy = itemStartY + (float)i * itemH;
-        int isSelected = (i == eng->pauseMenuIndex);
-
-        if (isSelected) {
-            debug_overlay_add_rect_z(ov, px + 14.0f, iy - 2.0f, panelW - 28.0f, itemH - 2.0f,
-                                     0.12f, 0.24f, 0.42f, 0.0016f);
-            debug_overlay_add_text(ov, px + 22.0f, iy + 4.0f, ">>", textScale, 1.0f, 0.92f, 0.20f);
-        } else {
-            debug_overlay_add_text(ov, px + 22.0f, iy + 4.0f, "  ", textScale, 0.5f, 0.5f, 0.5f);
-        }
-
-        float colTextR = isSelected ? 1.0f : 0.78f;
-        float colTextG = isSelected ? 1.0f : 0.84f;
-        float colTextB = isSelected ? 1.0f : 0.90f;
-        float valR = isSelected ? 1.0f : 0.35f;
-        float valG = isSelected ? 0.92f : 0.85f;
-        float valB = isSelected ? 0.30f : 0.95f;
-
-        char lineLabel[64] = {0};
-        char lineValue[64] = {0};
-
-        switch (i) {
-            case MENU_RESUME:
-                snprintf(lineLabel, sizeof(lineLabel), "1. Reanudar Simulacion");
-                snprintf(lineValue, sizeof(lineValue), "[ESC / P]");
-                break;
-            case MENU_TIME_SCALE:
-                snprintf(lineLabel, sizeof(lineLabel), "2. Velocidad de Tiempo");
-                snprintf(lineValue, sizeof(lineValue), "< %s >", g_timeSpeeds[eng->timeScaleIndex].label);
-                break;
-            case MENU_TIME_PRESET:
-                snprintf(lineLabel, sizeof(lineLabel), "3. Fijar Hora del Dia");
-                snprintf(lineValue, sizeof(lineValue), "< %s >", g_timePresets[eng->timePresetIndex].name);
-                break;
-            case MENU_HOUR_STEP:
-                snprintf(lineLabel, sizeof(lineLabel), "4. Ajustar Hora (+/-)");
-                snprintf(lineValue, sizeof(lineValue), "< %02d:%02d hrs >  [[ / ]]", hours, mins);
-                break;
-            case MENU_TIME_FREEZE:
-                snprintf(lineLabel, sizeof(lineLabel), "5. Congelar Avance Solar");
-                snprintf(lineValue, sizeof(lineValue), "[ %s ]  [Y]", eng->timeFrozen ? "SI (FIJO)" : "NO (AVANZA)");
-                break;
-            case MENU_TELEPORT:
-                snprintf(lineLabel, sizeof(lineLabel), "6. Teletransporte Rapido");
-                snprintf(lineValue, sizeof(lineValue), "< Puntos POI [F1-F6] >");
-                break;
-            case MENU_CULLING:
-                snprintf(lineLabel, sizeof(lineLabel), "7. Frustum Culling");
-                snprintf(lineValue, sizeof(lineValue), "[ %s ]  [F5]", eng->cullingEnabled ? "ACTIVADO" : "DESACTIVADO");
-                break;
-            case MENU_TELEMETRY:
-                snprintf(lineLabel, sizeof(lineLabel), "8. Telemetria ISO 25010");
-                snprintf(lineValue, sizeof(lineValue), "[ %s ]  [F8]", eng->showTelemetry ? "VISIBLE" : "OCULTO");
-                break;
-            case MENU_CAM_SPEED:
-                snprintf(lineLabel, sizeof(lineLabel), "9. Velocidad de Camara");
-                snprintf(lineValue, sizeof(lineValue), "< %s >", g_camSpeeds[eng->camSpeedIndex].name);
-                break;
-            case MENU_TRAFFIC_MODE: {
-                const char *sModes[] = {"Automatico", "Todos Verde", "Todos Rojo"};
-                snprintf(lineLabel, sizeof(lineLabel), "10. Modo Semaforos");
-                snprintf(lineValue, sizeof(lineValue), "< %s >", sModes[eng->trafficSignalMode]);
-                break;
-            }
-            case MENU_FLASHLIGHT:
-                snprintf(lineLabel, sizeof(lineLabel), "11. Linterna Frontal");
-                snprintf(lineValue, sizeof(lineValue), "[ %s ]  [F / L]",
-                         eng->lightingSystem.flashlightEnabled ? "ACTIVADA" : "DESACTIVADA");
-                break;
-            case MENU_QUIT:
-                snprintf(lineLabel, sizeof(lineLabel), "12. Salir del Motor");
-                snprintf(lineValue, sizeof(lineValue), "[Q / Salir]");
-                break;
-            default: break;
-        }
-
-        debug_overlay_add_text(ov, px + 44.0f,  iy + 4.0f, lineLabel, textScale, colTextR, colTextG, colTextB);
-        debug_overlay_add_text(ov, px + 310.0f, iy + 4.0f, lineValue, textScale, valR, valG, valB);
-    }
-
-    /* 5. Footer */
+    /* Pie del menú con atajos de teclado */
     debug_overlay_add_rect_z(ov, px + 18.0f, py + panelH - 46.0f, panelW - 36.0f, 1.5f, 0.18f, 0.32f, 0.48f, 0.0020f);
-
-    float footerScale = 1.45f;
     debug_overlay_add_text(ov, px + 22.0f, py + panelH - 36.0f,
                            "[ARRIBA/ABAJO]: Seleccionar  [IZQ/DER]: Ajustar  [ENTER/ESPACIO]: Aplicar",
-                           footerScale, 0.70f, 0.82f, 0.95f);
+                           1.45f, 0.70f, 0.82f, 0.95f);
     debug_overlay_add_text(ov, px + 22.0f, py + panelH - 18.0f,
                            "[P / ESC]: Reanudar  [[ / ]]: -/+1h  [T]: Vel. Tiempo  [F1-F6]: Teleport  [Q]: Salir",
-                           footerScale, 0.55f, 0.75f, 0.88f);
+                           1.45f, 0.55f, 0.75f, 0.88f);
 }

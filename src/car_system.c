@@ -159,6 +159,53 @@ static float edge_approx_heading(const RoadGraph* graph, const RoadEdge* e,
 
 /* ---------- elección de siguiente arista en O(1) via CSR ---------- */
 
+static int collect_next_edge_candidates(const RoadGraph* graph, uint32_t curr_eidx,
+                                        uint32_t reach_node, uint32_t cands[64], uint8_t dirs[64]) {
+    int n = 0;
+    if (graph->node_edge_offsets && graph->node_edge_indices && graph->node_edge_dirs) {
+        if (reach_node >= graph->n_nodes) return 0;
+        uint32_t start = graph->node_edge_offsets[reach_node];
+        uint32_t end   = graph->node_edge_offsets[reach_node + 1];
+        for (uint32_t idx = start; idx < end && n < 64; idx++) {
+            uint32_t eidx = graph->node_edge_indices[idx];
+            if (eidx == curr_eidx || eidx >= graph->n_edges) continue;
+            if (graph->edges[eidx].pt_count < 2) continue;
+            cands[n] = eidx;
+            dirs[n]  = graph->node_edge_dirs[idx];
+            n++;
+        }
+        return n;
+    }
+
+    for (uint32_t i = 0; i < graph->n_edges && n < 64; i++) {
+        if (i == curr_eidx) continue;
+        const RoadEdge* e = &graph->edges[i];
+        if (e->pt_count < 2) continue;
+        if (e->a == reach_node) { cands[n] = i; dirs[n] = 0; n++; }
+        else if (!e->oneway && e->b == reach_node) { cands[n] = i; dirs[n] = 1; n++; }
+    }
+    return n;
+}
+
+static uint32_t pick_straightest_candidate(const RoadGraph* graph, const uint32_t cands[64],
+                                           const uint8_t dirs[64], int n, float cur_heading) {
+    int best = 0;
+    float best_diff = 1e9f;
+    for (int i = 0; i < n; i++) {
+        const RoadEdge* e = &graph->edges[cands[i]];
+        if ((uint64_t)e->pt_off + (uint64_t)e->pt_count > (uint64_t)graph->n_points) continue;
+        uint32_t p0i = e->pt_off + (dirs[i] ? (e->pt_count - 1) : 0);
+        uint32_t p1i = e->pt_off + (dirs[i] ? (e->pt_count - 2) : 1);
+        RoadPoint p0 = graph->points[p0i], p1 = graph->points[p1i];
+        float ang = atan2f(p1.x - p0.x, p1.z - p0.z);
+        float diff = fabsf(ang - cur_heading);
+        while (diff > (float)M_PI) diff -= 2.f * (float)M_PI;
+        diff = fabsf(diff);
+        if (diff < best_diff) { best_diff = diff; best = i; }
+    }
+    return cands[best];
+}
+
 static uint32_t pick_next_edge(const RoadGraph* graph,
                                uint32_t curr_eidx, uint32_t reach_node,
                                float cur_heading)
@@ -167,50 +214,11 @@ static uint32_t pick_next_edge(const RoadGraph* graph,
 
     uint32_t cands[64];
     uint8_t  dirs[64];
-    int      n = 0;
-
-    if (graph->node_edge_offsets && graph->node_edge_indices && graph->node_edge_dirs) {
-        if (reach_node < graph->n_nodes) {
-            uint32_t start = graph->node_edge_offsets[reach_node];
-            uint32_t end   = graph->node_edge_offsets[reach_node + 1];
-            for (uint32_t idx = start; idx < end && n < 64; idx++) {
-                uint32_t eidx = graph->node_edge_indices[idx];
-                if (eidx == curr_eidx || eidx >= graph->n_edges) continue;
-                const RoadEdge* e = &graph->edges[eidx];
-                if (e->pt_count < 2) continue;
-                cands[n] = eidx;
-                dirs[n]  = graph->node_edge_dirs[idx];
-                n++;
-            }
-        }
-    } else {
-        for (uint32_t i = 0; i < graph->n_edges && n < 64; i++) {
-            if (i == curr_eidx) continue;
-            const RoadEdge* e = &graph->edges[i];
-            if (e->pt_count < 2) continue;
-            if (e->a == reach_node) { cands[n] = i; dirs[n] = 0; n++; }
-            else if (!e->oneway && e->b == reach_node) { cands[n] = i; dirs[n] = 1; n++; }
-        }
-    }
+    int n = collect_next_edge_candidates(graph, curr_eidx, reach_node, cands, dirs);
     if (n == 0) return curr_eidx;
 
-    /* 70% elegir "todo recto" (menor cambio de ángulo) */
     if (rand() % 100 < 70) {
-        int best = 0;
-        float best_diff = 1e9f;
-        for (int i = 0; i < n; i++) {
-            const RoadEdge* e = &graph->edges[cands[i]];
-            if ((uint64_t)e->pt_off + (uint64_t)e->pt_count > (uint64_t)graph->n_points) continue;
-            uint32_t p0i = e->pt_off + (dirs[i] ? (e->pt_count - 1) : 0);
-            uint32_t p1i = e->pt_off + (dirs[i] ? (e->pt_count - 2) : 1);
-            RoadPoint p0 = graph->points[p0i], p1 = graph->points[p1i];
-            float ang = atan2f(p1.x - p0.x, p1.z - p0.z);
-            float diff = fabsf(ang - cur_heading);
-            while (diff > (float)M_PI) diff -= 2.f * (float)M_PI;
-            diff = fabsf(diff);
-            if (diff < best_diff) { best_diff = diff; best = i; }
-        }
-        return cands[best];
+        return pick_straightest_candidate(graph, cands, dirs, n, cur_heading);
     }
     return cands[rand() % n];
 }
@@ -532,14 +540,9 @@ static void build_car_spatial_hash(CarSpatialHash* grid, const Car cars[NUM_CARS
     }
 }
 
-static void find_lead_car(const CarSpatialHash* grid, const Car cars[NUM_CARS],
-                          int ci, float elen, float* out_dist_to_lead, float* out_lead_v)
-{
+static void find_lead_same_lane(const CarSpatialHash* grid, const Car cars[NUM_CARS],
+                                int ci, float elen, float* dist_to_lead, float* lead_v) {
     const Car* car = &cars[ci];
-    float dist_to_lead = 999.0f;
-    float lead_v = car->v_desired;
-
-    /* Caso 1: En la misma arista, misma dirección y mismo carril */
     uint32_t eh = hash_edge_idx(car->edge_idx);
     for (int other_i = grid->edge_head[eh]; other_i >= 0; other_i = grid->edge_next[other_i]) {
         if (other_i == ci) continue;
@@ -549,14 +552,48 @@ static void find_lead_car(const CarSpatialHash* grid, const Car cars[NUM_CARS],
             other->lane == car->lane &&
             other->t > car->t) {
             float d = (other->t - car->t) * elen;
-            if (d < dist_to_lead) {
-                dist_to_lead = d;
-                lead_v = other->v;
+            if (d < *dist_to_lead) {
+                *dist_to_lead = d;
+                *lead_v = other->v;
             }
         }
     }
+}
 
-    /* Caso 2: Proximidad espacial euclidiana frontal en intersecciones (vecindad 3x3 de 28m) */
+static void find_lead_in_cell(const CarSpatialHash* grid, const Car cars[NUM_CARS],
+                              int ci, uint32_t ch, float fwd_dx, float fwd_dz,
+                              float* dist_to_lead, float* lead_v) {
+    const Car* car = &cars[ci];
+    for (int other_i = grid->cell_head[ch]; other_i >= 0; other_i = grid->car_next[other_i]) {
+        if (other_i == ci) continue;
+        const Car* other = &cars[other_i];
+        if (other->edge_idx == car->edge_idx &&
+            other->direction == car->direction &&
+            other->lane == car->lane) {
+            continue;
+        }
+        float cdx = other->pos[0] - car->pos[0];
+        float cdz = other->pos[2] - car->pos[2];
+        float distSq = cdx * cdx + cdz * cdz;
+        if (distSq < 49.0f && (cdx * fwd_dx + cdz * fwd_dz) > 0.5f) {
+            float d = sqrtf(distSq);
+            if (d < *dist_to_lead) {
+                *dist_to_lead = d;
+                *lead_v = other->v;
+            }
+        }
+    }
+}
+
+static void find_lead_car(const CarSpatialHash* grid, const Car cars[NUM_CARS],
+                          int ci, float elen, float* out_dist_to_lead, float* out_lead_v)
+{
+    const Car* car = &cars[ci];
+    float dist_to_lead = 999.0f;
+    float lead_v = car->v_desired;
+
+    find_lead_same_lane(grid, cars, ci, elen, &dist_to_lead, &lead_v);
+
     if (isfinite(car->pos[0]) && isfinite(car->pos[2]) &&
         fabsf(car->pos[0]) <= 1e7f && fabsf(car->pos[2]) <= 1e7f) {
         int gx = (int)floorf(car->pos[0] / CAR_GRID_CELL_SIZE);
@@ -567,28 +604,7 @@ static void find_lead_car(const CarSpatialHash* grid, const Car cars[NUM_CARS],
         for (int oz = -1; oz <= 1; oz++) {
             for (int ox = -1; ox <= 1; ox++) {
                 uint32_t ch = hash_grid_cell(gx + ox, gz + oz);
-                for (int other_i = grid->cell_head[ch]; other_i >= 0; other_i = grid->car_next[other_i]) {
-                    if (other_i == ci) continue;
-                    const Car* other = &cars[other_i];
-                    if (other->edge_idx == car->edge_idx &&
-                        other->direction == car->direction &&
-                        other->lane == car->lane) {
-                        continue;
-                    }
-                    float cdx = other->pos[0] - car->pos[0];
-                    float cdz = other->pos[2] - car->pos[2];
-                    float distSq = cdx * cdx + cdz * cdz;
-                    if (distSq < 49.0f) {
-                        float dotFwd = cdx * fwd_dx + cdz * fwd_dz;
-                        if (dotFwd > 0.5f) {
-                            float d = sqrtf(distSq);
-                            if (d < dist_to_lead) {
-                                dist_to_lead = d;
-                                lead_v = other->v;
-                            }
-                        }
-                    }
-                }
+                find_lead_in_cell(grid, cars, ci, ch, fwd_dx, fwd_dz, &dist_to_lead, &lead_v);
             }
         }
     }
@@ -599,13 +615,8 @@ static void find_lead_car(const CarSpatialHash* grid, const Car cars[NUM_CARS],
 
 static void car_system_stage_instances(CarSystem* sys);
 
-void car_system_update(CarSystem* sys, const RoadGraph* graph,
-                       const TrafficSystem* traffic,
-                       float dt, float cam_x, float cam_z)
-{
-    if (!sys || !graph || graph->n_edges == 0) return;
-
-    /* Pre-pase de respawn para poblar el hash espacial con posiciones y aristas válidas */
+/* Respawnea vehículos fuera de radio (800m) o con aristas inválidas. */
+static void respawn_invalid_cars(CarSystem* sys, const RoadGraph* graph, float cam_x, float cam_z) {
     for (int ci = 0; ci < NUM_CARS; ci++) {
         Car* car = &sys->cars[ci];
         float dx = car->pos[0] - cam_x, dz = car->pos[2] - cam_z;
@@ -621,160 +632,172 @@ void car_system_update(CarSystem* sys, const RoadGraph* graph,
             spawn_car(car, graph, cam_x, cam_z);
         }
     }
+}
+
+/* Calcula velocidad objetivo considerando semáforos próximos en el nodo destino. */
+static float compute_traffic_target_speed(const Car* car, const RoadEdge* edge, const RoadGraph* graph,
+                                          const TrafficSystem* traffic, float elen) {
+    float target_speed = car->v_desired;
+    if (!traffic) return target_speed;
+
+    uint32_t target_node_idx = (car->direction == 0) ? edge->b : edge->a;
+    if (target_node_idx >= graph->n_nodes) return target_speed;
+
+    const RoadNode* target_node = &graph->nodes[target_node_idx];
+    float dist_to_node = (1.0f - car->t) * elen;
+    if (target_node->signal_group < 0 || dist_to_node > 35.0f) return target_speed;
+
+    TrafficLightState light = traffic_system_get_light_state_at(
+        traffic, target_node->x, target_node->z, 18.0f);
+    if (light != TRAFFIC_LIGHT_RED && light != TRAFFIC_LIGHT_AMBER) return target_speed;
+
+    if (dist_to_node <= 5.0f) return 0.0f;
+    float ratio = (dist_to_node - 5.0f) / 30.0f;
+    return car->v_desired * ratio * ratio;
+}
+
+/* Aplica seguimiento vehicular tipo IDM usando el hash espacial. */
+static float apply_following_idm(const CarSpatialHash* grid, const Car cars[NUM_CARS],
+                                 int ci, float elen, float target_speed) {
+    float dist_to_lead = 999.0f;
+    float lead_v = cars[ci].v_desired;
+    find_lead_car(grid, cars, ci, elen, &dist_to_lead, &lead_v);
+
+    float desired_gap = MIN_FOLLOW_DIST + cars[ci].v * SAFE_TIME_HEADWAY;
+    if (dist_to_lead >= desired_gap) return target_speed;
+    if (dist_to_lead <= MIN_FOLLOW_DIST) return 0.0f;
+
+    float ratio = (dist_to_lead - MIN_FOLLOW_DIST) / (desired_gap - MIN_FOLLOW_DIST);
+    float safe_v = lead_v * (ratio * ratio);
+    return (safe_v < target_speed) ? safe_v : target_speed;
+}
+
+static void update_car_velocity(Car* car, float target_speed, float dt, float elen) {
+    if (car->v > target_speed) {
+        car->v -= 8.5f * dt;
+        if (car->v < target_speed) car->v = target_speed;
+        car->brake = 1.0f;
+    } else if (car->v < target_speed) {
+        car->v += 4.0f * dt;
+        if (car->v > target_speed) car->v = target_speed;
+        car->brake = 0.0f;
+    } else {
+        car->brake = (car->v < 0.1f) ? 1.0f : 0.0f;
+    }
+
+    if (car->v > 0.001f) {
+        car->t += (car->v * dt) / elen;
+    }
+}
+
+static void advance_car_to_next_edge(Car* car, const RoadGraph* graph,
+                                     const RoadEdge** edge_io, float* elen_io) {
+    if (car->t < 1.0f) return;
+    const RoadEdge* edge = *edge_io;
+    car->t = 0.f;
+
+    uint32_t reach = (car->direction == 0) ? edge->b : edge->a;
+    uint32_t nxt = car->next_edge_idx;
+    if (nxt >= graph->n_edges || nxt == car->edge_idx ||
+        graph->edges[nxt].pt_count < 2 ||
+        (graph->edges[nxt].a != reach &&
+         (graph->edges[nxt].oneway || graph->edges[nxt].b != reach))) {
+        nxt = pick_next_edge(graph, car->edge_idx, reach, car->heading);
+    }
+
+    car->edge_idx = nxt;
+    const RoadEdge* ne = &graph->edges[nxt];
+    car->direction = (ne->a == reach) ? 0 : 1;
+
+    int max_l = (car->direction == 0) ? maxi(1, ne->lanes_fwd) : maxi(1, ne->lanes_rev);
+    if (car->lane >= max_l) car->lane = (int8_t)(max_l - 1);
+    if (car->lane < 0) car->lane = 0;
+
+    uint32_t next_reach = (car->direction == 0) ? ne->b : ne->a;
+    float next_heading = edge_approx_heading(graph, ne, car->direction, car->heading);
+    car->next_edge_idx = pick_next_edge(graph, nxt, next_reach, next_heading);
+
+    *edge_io = ne;
+    *elen_io = edge_length(graph, car->edge_idx);
+}
+
+static void apply_smooth_corner_heading(Car* car, const RoadGraph* graph,
+                                        const RoadEdge* edge, float elen) {
+    if (car->t < 1.f - 8.f / elen ||
+        car->next_edge_idx == car->edge_idx ||
+        car->next_edge_idx >= graph->n_edges) {
+        return;
+    }
+    const RoadEdge* ne = &graph->edges[car->next_edge_idx];
+    if (ne->pt_count < 2 ||
+        (uint64_t)ne->pt_off + (uint64_t)ne->pt_count > (uint64_t)graph->n_points) {
+        return;
+    }
+
+    uint32_t reach = (car->direction == 0) ? edge->b : edge->a;
+    RoadPoint p0 = (ne->a == reach) ? graph->points[ne->pt_off]
+                                    : graph->points[ne->pt_off + ne->pt_count - 1];
+    RoadPoint p1 = (ne->a == reach) ? graph->points[ne->pt_off + 1]
+                                    : graph->points[ne->pt_off + ne->pt_count - 2];
+    float ndx = p1.x - p0.x, ndz = p1.z - p0.z;
+    float nlen = sqrtf(ndx * ndx + ndz * ndz);
+    if (nlen <= 0.001f) return;
+
+    float target_h = atan2f(ndx / nlen, ndz / nlen);
+    float alpha = fmaxf(0.f, fminf(1.f, (car->t - (1.f - 8.f / elen)) / (8.f / elen)));
+    float dh = target_h - car->heading;
+    while (dh >  (float)M_PI) dh -= 2.f * (float)M_PI;
+    while (dh < -(float)M_PI) dh += 2.f * (float)M_PI;
+    car->heading += alpha * dh;
+}
+
+/* Avanza un vehículo individual: semáforos, IDM, cinemática y transición de arista. */
+static void update_single_car(CarSystem* sys, const CarSpatialHash* grid,
+                              const RoadGraph* graph, const TrafficSystem* traffic,
+                              int ci, float dt, float cam_x, float cam_z) {
+    Car* car = &sys->cars[ci];
+    const RoadEdge* edge = &graph->edges[car->edge_idx];
+    if (edge->pt_count < 2 ||
+        (uint64_t)edge->pt_off + (uint64_t)edge->pt_count > (uint64_t)graph->n_points) {
+        return;
+    }
+
+    float elen = edge_length(graph, car->edge_idx);
+    float target_speed = compute_traffic_target_speed(car, edge, graph, traffic, elen);
+    target_speed = apply_following_idm(grid, sys->cars, ci, elen, target_speed);
+
+    update_car_velocity(car, target_speed, dt, elen);
+    advance_car_to_next_edge(car, graph, &edge, &elen);
+
+    float wx, wy, wz, fwd_x, fwd_z;
+    polyline_sample(graph, edge, elen, car->t, car->direction,
+                    &wx, &wy, &wz, &fwd_x, &fwd_z);
+    float lane_off = (car->lane + 0.5f) * 3.2f;
+    car->pos[0] = wx + (-fwd_z) * lane_off;
+    car->pos[1] = wy;
+    car->pos[2] = wz + fwd_x * lane_off;
+    car->heading = atan2f(fwd_x, fwd_z);
+
+    apply_smooth_corner_heading(car, graph, edge, elen);
+
+    if (isnan(car->pos[0]) || isnan(car->pos[1]) || isnan(car->pos[2]) || isnan(car->heading)) {
+        car->pos[0] = cam_x; car->pos[1] = 0.f; car->pos[2] = cam_z; car->heading = 0.f;
+    }
+}
+
+void car_system_update(CarSystem* sys, const RoadGraph* graph,
+                       const TrafficSystem* traffic,
+                       float dt, float cam_x, float cam_z)
+{
+    if (!sys || !graph || graph->n_edges == 0) return;
+
+    respawn_invalid_cars(sys, graph, cam_x, cam_z);
 
     CarSpatialHash grid;
     build_car_spatial_hash(&grid, sys->cars);
 
     for (int ci = 0; ci < NUM_CARS; ci++) {
-        Car* car = &sys->cars[ci];
-        const RoadEdge* edge = &graph->edges[car->edge_idx];
-        if (edge->pt_count < 2 ||
-            (uint64_t)edge->pt_off + (uint64_t)edge->pt_count > (uint64_t)graph->n_points) {
-            continue;
-        }
-
-        /* ---- obtener longitud precomputada de la arista en O(1) ---- */
-        float elen = edge_length(graph, car->edge_idx);
-
-        /* ---- Verificar semáforo solo si el nodo destino está semaforizado y cerca ---- */
-        uint32_t target_node_idx = (car->direction == 0) ? edge->b : edge->a;
-        float target_speed = car->v_desired;
-        float dist_to_node = (1.0f - car->t) * elen;
-
-        if (traffic && target_node_idx < graph->n_nodes) {
-            const RoadNode* target_node = &graph->nodes[target_node_idx];
-            if (target_node->signal_group >= 0 && dist_to_node <= 35.0f) {
-                TrafficLightState light = traffic_system_get_light_state_at(
-                    traffic, target_node->x, target_node->z, 18.0f);
-
-                if (light == TRAFFIC_LIGHT_RED || light == TRAFFIC_LIGHT_AMBER) {
-                    if (dist_to_node <= 5.0f) {
-                        target_speed = 0.0f; /* Detenerse a 5 metros */
-                    } else {
-                        /* Desaceleración progresiva suave */
-                        float ratio = (dist_to_node - 5.0f) / 30.0f;
-                        target_speed = car->v_desired * ratio * ratio;
-                    }
-                }
-            }
-        }
-
-        /* ---- Modelo de Seguimiento Vehicular (Spatial Hash IDM) ---- */
-        float dist_to_lead = 999.0f;
-        float lead_v = car->v_desired;
-        find_lead_car(&grid, sys->cars, ci, elen, &dist_to_lead, &lead_v);
-
-        float desired_gap = MIN_FOLLOW_DIST + car->v * SAFE_TIME_HEADWAY;
-
-        if (dist_to_lead < desired_gap) {
-            if (dist_to_lead <= MIN_FOLLOW_DIST) {
-                target_speed = 0.0f; /* Freno total: evita superposición */
-            } else {
-                float ratio = (dist_to_lead - MIN_FOLLOW_DIST) / (desired_gap - MIN_FOLLOW_DIST);
-                float safe_v = lead_v * (ratio * ratio);
-                if (safe_v < target_speed) {
-                    target_speed = safe_v;
-                }
-            }
-        }
-
-        /* Suavizado de velocidad y control de luces de freno */
-        if (car->v > target_speed) {
-            float decelRate = 8.5f * dt; /* Tasa de frenado (m/s^2) */
-            car->v -= decelRate;
-            if (car->v < target_speed) car->v = target_speed;
-            car->brake = 1.0f; /* Activar luces de freno traseras */
-        } else if (car->v < target_speed) {
-            float accelRate = 4.0f * dt; /* Aceleración suave */
-            car->v += accelRate;
-            if (car->v > target_speed) car->v = target_speed;
-            car->brake = 0.0f;
-        } else {
-            car->brake = (car->v < 0.1f) ? 1.0f : 0.0f;
-        }
-
-        /* Si el coche tiene velocidad, avanzar t */
-        if (car->v > 0.001f) {
-            car->t += (car->v * dt) / elen;
-        }
-
-        /* ---- llegó al nodo destino → elegir siguiente arista ---- */
-        if (car->t >= 1.0f) {
-            car->t = 0.f;
-            uint32_t reach = (car->direction == 0) ? edge->b : edge->a;
-            uint32_t nxt = car->next_edge_idx;
-            if (nxt >= graph->n_edges || nxt == car->edge_idx ||
-                graph->edges[nxt].pt_count < 2 ||
-                (graph->edges[nxt].a != reach &&
-                 (graph->edges[nxt].oneway || graph->edges[nxt].b != reach))) {
-                nxt = pick_next_edge(graph, car->edge_idx, reach, car->heading);
-            }
-            car->edge_idx  = nxt;
-            const RoadEdge* ne = &graph->edges[nxt];
-            car->direction = (ne->a == reach) ? 0 : 1;
-
-            int max_l = (car->direction == 0) ? maxi(1, ne->lanes_fwd) : maxi(1, ne->lanes_rev);
-            if (car->lane >= max_l) car->lane = (int8_t)(max_l - 1);
-            if (car->lane < 0) car->lane = 0;
-
-            uint32_t next_reach = (car->direction == 0) ? ne->b : ne->a;
-            float next_heading = edge_approx_heading(graph, ne, car->direction, car->heading);
-            car->next_edge_idx = pick_next_edge(graph, nxt, next_reach, next_heading);
-
-            edge = ne;
-            elen = edge_length(graph, car->edge_idx);
-        }
-
-        /* ---- interpolar posición y dirección ---- */
-        float wx, wy, wz, fwd_x, fwd_z;
-        polyline_sample(graph, edge, elen, car->t, car->direction,
-                        &wx, &wy, &wz, &fwd_x, &fwd_z);
-
-        /* offset de carril: right = (-fwd_z, 0, fwd_x) */
-        float lane_off = (car->lane + 0.5f) * 3.2f;
-        wx += (-fwd_z) * lane_off;
-        wz += ( fwd_x) * lane_off;
-
-        car->pos[0] = wx;
-        car->pos[1] = wy;
-        car->pos[2] = wz;
-        car->heading = atan2f(fwd_x, fwd_z);
-
-        /* ---- heading suave a <8m del nodo destino ---- */
-        if (car->t >= 1.f - 8.f / elen &&
-            car->next_edge_idx != car->edge_idx &&
-            car->next_edge_idx < graph->n_edges) {
-            const RoadEdge* ne = &graph->edges[car->next_edge_idx];
-            if (ne->pt_count >= 2 &&
-                (uint64_t)ne->pt_off + (uint64_t)ne->pt_count <= (uint64_t)graph->n_points) {
-                uint32_t reach = (car->direction == 0) ? edge->b : edge->a;
-                RoadPoint p0, p1;
-                if (ne->a == reach) {
-                    p0 = graph->points[ne->pt_off];
-                    p1 = graph->points[ne->pt_off + 1];
-                } else {
-                    p0 = graph->points[ne->pt_off + ne->pt_count - 1];
-                    p1 = graph->points[ne->pt_off + ne->pt_count - 2];
-                }
-                float ndx = p1.x - p0.x, ndz = p1.z - p0.z;
-                float nlen = sqrtf(ndx * ndx + ndz * ndz);
-                if (nlen > 0.001f) {
-                    float target_h = atan2f(ndx / nlen, ndz / nlen);
-                    float alpha = (car->t - (1.f - 8.f / elen)) / (8.f / elen);
-                    alpha = fmaxf(0.f, fminf(1.f, alpha));
-                    /* interpolación angular */
-                    float dh = target_h - car->heading;
-                    while (dh >  (float)M_PI) dh -= 2.f * (float)M_PI;
-                    while (dh < -(float)M_PI) dh += 2.f * (float)M_PI;
-                    car->heading += alpha * dh;
-                }
-            }
-        }
-
-        /* ---- sanity check NaN ---- */
-        if (isnan(car->pos[0]) || isnan(car->pos[1]) || isnan(car->pos[2]) || isnan(car->heading)) {
-            car->pos[0] = cam_x; car->pos[1] = 0.f; car->pos[2] = cam_z; car->heading = 0.f;
-        }
+        update_single_car(sys, &grid, graph, traffic, ci, dt, cam_x, cam_z);
     }
 
     car_system_stage_instances(sys);
