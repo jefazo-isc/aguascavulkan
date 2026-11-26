@@ -1010,7 +1010,7 @@ async function main() {
         state.yaw = INITIAL_CAMERA.yaw;
         state.pitch = INITIAL_CAMERA.pitch;
         showToast('Cámara: Rolcar Paseo de la Cruz (Sector 0,0)');
-        maybeStreamNearbySectors(INITIAL_CAMERA.x, INITIAL_CAMERA.z);
+        maybeStreamNearbySectors(INITIAL_CAMERA.pos[0], INITIAL_CAMERA.pos[2]);
     }
     resetCamera();
     f32Mem[MEM_SIM_TIME_PTR >> 2] = 0.0;

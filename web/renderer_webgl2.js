@@ -1339,6 +1339,13 @@ export class WebGL2Renderer {
             const count = frame.cars.count;
             gl.bindVertexArray(this.vehicleMesh.vao);
             gl.useProgram(this.program);
+            // Re-bind UBO after sector loop may have left stale state
+            gl.bindBuffer(gl.UNIFORM_BUFFER, this.ubo);
+            gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, this.ubo);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, this.satelliteTex);
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, this.facadeTex);
 
             for (let i = 0; i < count; i++) {
                 const off = carsBase + i * 6;
