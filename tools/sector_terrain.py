@@ -421,11 +421,22 @@ def generate_terrain_mesh(
             u = (px - ux0) / u_range
             grid_pts.append((px, py, pz, u, v))
 
-    norm_up = (0.0, 1.0, 0.0)
     terrain_col = (1.0, 1.0, 1.0, 0.0)
     skipped_subquads = 0
     N_SUB = 32
     vertices: List[VertexTuple] = []
+
+    def _face_normal(ax, ay, az, bx, by, bz, cx, cy, cz):
+        """Compute face normal from triangle vertices via cross product."""
+        e1x, e1y, e1z = bx - ax, by - ay, bz - az
+        e2x, e2y, e2z = cx - ax, cy - ay, cz - az
+        nx = e1y * e2z - e1z * e2y
+        ny = e1z * e2x - e1x * e2z
+        nz = e1x * e2y - e1y * e2x
+        ln = math.sqrt(nx * nx + ny * ny + nz * nz)
+        if ln < 1e-12:
+            return (0.0, 1.0, 0.0)
+        return (nx / ln, ny / ln, nz / ln)
 
     for r in range(rows):
         for c in range(cols):
@@ -456,12 +467,15 @@ def generate_terrain_mesh(
                                 candidates.append(item)
 
             if not candidates:
-                vertices.append(((p0[0], p0[1], p0[2]), norm_up, (p0[3], p0[4]), terrain_col, 0.0))
-                vertices.append(((p1[0], p1[1], p1[2]), norm_up, (p1[3], p1[4]), terrain_col, 0.0))
-                vertices.append(((p2[0], p2[1], p2[2]), norm_up, (p2[3], p2[4]), terrain_col, 0.0))
-                vertices.append(((p1[0], p1[1], p1[2]), norm_up, (p1[3], p1[4]), terrain_col, 0.0))
-                vertices.append(((p3[0], p3[1], p3[2]), norm_up, (p3[3], p3[4]), terrain_col, 0.0))
-                vertices.append(((p2[0], p2[1], p2[2]), norm_up, (p2[3], p2[4]), terrain_col, 0.0))
+                # Compute per-face normals from actual triangle geometry
+                n_a = _face_normal(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], p2[0], p2[1], p2[2])
+                n_b = _face_normal(p1[0], p1[1], p1[2], p3[0], p3[1], p3[2], p2[0], p2[1], p2[2])
+                vertices.append(((p0[0], p0[1], p0[2]), n_a, (p0[3], p0[4]), terrain_col, 0.0))
+                vertices.append(((p1[0], p1[1], p1[2]), n_a, (p1[3], p1[4]), terrain_col, 0.0))
+                vertices.append(((p2[0], p2[1], p2[2]), n_a, (p2[3], p2[4]), terrain_col, 0.0))
+                vertices.append(((p1[0], p1[1], p1[2]), n_b, (p1[3], p1[4]), terrain_col, 0.0))
+                vertices.append(((p3[0], p3[1], p3[2]), n_b, (p3[3], p3[4]), terrain_col, 0.0))
+                vertices.append(((p2[0], p2[1], p2[2]), n_b, (p2[3], p2[4]), terrain_col, 0.0))
             else:
                 sub_dx = (p1[0] - p0[0]) / N_SUB
                 sub_dz = (p2[2] - p0[2]) / N_SUB
@@ -502,12 +516,14 @@ def generate_terrain_mesh(
                         su1 = (spx1 - ux0) / u_range
                         sv1 = (spz1 - uz0) / v_range
 
-                        vertices.append(((spx0, spy0, spz0), norm_up, (su0, sv0), terrain_col, 0.0))
-                        vertices.append(((spx1, spy1, spz0), norm_up, (su1, sv0), terrain_col, 0.0))
-                        vertices.append(((spx0, spy2, spz1), norm_up, (su0, sv1), terrain_col, 0.0))
-                        vertices.append(((spx1, spy1, spz0), norm_up, (su1, sv0), terrain_col, 0.0))
-                        vertices.append(((spx1, spy3, spz1), norm_up, (su1, sv1), terrain_col, 0.0))
-                        vertices.append(((spx0, spy2, spz1), norm_up, (su0, sv1), terrain_col, 0.0))
+                        sn_a = _face_normal(spx0, spy0, spz0, spx1, spy1, spz0, spx0, spy2, spz1)
+                        sn_b = _face_normal(spx1, spy1, spz0, spx1, spy3, spz1, spx0, spy2, spz1)
+                        vertices.append(((spx0, spy0, spz0), sn_a, (su0, sv0), terrain_col, 0.0))
+                        vertices.append(((spx1, spy1, spz0), sn_a, (su1, sv0), terrain_col, 0.0))
+                        vertices.append(((spx0, spy2, spz1), sn_a, (su0, sv1), terrain_col, 0.0))
+                        vertices.append(((spx1, spy1, spz0), sn_b, (su1, sv0), terrain_col, 0.0))
+                        vertices.append(((spx1, spy3, spz1), sn_b, (su1, sv1), terrain_col, 0.0))
+                        vertices.append(((spx0, spy2, spz1), sn_b, (su0, sv1), terrain_col, 0.0))
 
     # ── Faldón Perimetral Antifisuras (Downward Perimeter Skirt) ──
     # Extiende paredes verticales hacia abajo (Y - 15m) en los 4 bordes para

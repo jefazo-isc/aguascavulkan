@@ -219,9 +219,29 @@ void main() {
             metallic = 0.0;
         }
     } else if (matID < 0.1) {
+        // Height-based terrain coloring with topographic shading
+        float h = fragWorldPos.y;
+        // Aguascalientes relative terrain: valleys ~-25m, hills ~+25m from base_elevation
+        float t = clamp((h + 25.0) / 50.0, 0.0, 1.0);
+        // Natural terrain gradient: low=green valley → mid=brown earth → high=light rock
+        vec3 valleyGreen = vec3(0.22, 0.32, 0.14);
+        vec3 midEarth    = vec3(0.38, 0.30, 0.18);
+        vec3 hillRock    = vec3(0.52, 0.48, 0.40);
+        vec3 terrainBase;
+        if (t < 0.5) {
+            terrainBase = mix(valleyGreen, midEarth, t * 2.0);
+        } else {
+            terrainBase = mix(midEarth, hillRock, (t - 0.5) * 2.0);
+        }
+        // Add procedural noise for natural variation
         float terrainNoise = noise2D(fragWorldPos.xz * 0.12) * 0.06 - 0.03;
-        albedo = clamp(sat.rgb + vec3(terrainNoise), vec3(0.02), vec3(0.98));
-        roughness = 0.90;
+        float detailNoise = noise2D(fragWorldPos.xz * 0.8) * 0.04 - 0.02;
+        // Subtle contour lines every 5 meters
+        float contourLine = 1.0 - smoothstep(0.0, 0.3, abs(fract(h / 5.0) - 0.5) * 2.0) * 0.12;
+        albedo = clamp(terrainBase + vec3(terrainNoise + detailNoise), vec3(0.02), vec3(0.98)) * contourLine;
+        // Blend with satellite texture for areas where it has real data
+        albedo = mix(albedo, sat.rgb * 0.9 + vec3(terrainNoise), 0.15);
+        roughness = 0.92;
         metallic = 0.0;
     } else if (matID < 0.5) {
         albedo = mix(sat.rgb * 0.88, fragColor.rgb, 0.15);

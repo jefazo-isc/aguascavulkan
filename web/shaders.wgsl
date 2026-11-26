@@ -224,11 +224,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             metallic = 0.0;
         }
     }
-    // 2. Terrain / Satellite (matID == 0.0)
+    // 2. Terrain / Satellite with topographic height-based coloring (matID == 0.0)
     else if (matID < 0.1) {
+        let h = in.worldPos.y;
+        let t = clamp((h + 25.0) / 50.0, 0.0, 1.0);
+        let valleyGreen = vec3<f32>(0.22, 0.32, 0.14);
+        let midEarth    = vec3<f32>(0.38, 0.30, 0.18);
+        let hillRock    = vec3<f32>(0.52, 0.48, 0.40);
+        var terrainBase: vec3<f32>;
+        if (t < 0.5) {
+            terrainBase = mix(valleyGreen, midEarth, t * 2.0);
+        } else {
+            terrainBase = mix(midEarth, hillRock, (t - 0.5) * 2.0);
+        }
         let terrainNoise = noise2D(in.worldPos.xz * 0.12) * 0.06 - 0.03;
-        albedo = clamp(sat.rgb + vec3<f32>(terrainNoise), vec3<f32>(0.02), vec3<f32>(0.98));
-        roughness = 0.90;
+        let detailNoise = noise2D(in.worldPos.xz * 0.8) * 0.04 - 0.02;
+        let contourLine = 1.0 - smoothstep(0.0, 0.3, abs(fract(h / 5.0) - 0.5) * 2.0) * 0.12;
+        albedo = clamp(terrainBase + vec3<f32>(terrainNoise + detailNoise), vec3<f32>(0.02), vec3<f32>(0.98)) * contourLine;
+        albedo = mix(albedo, sat.rgb * 0.9 + vec3<f32>(terrainNoise), 0.15);
+        roughness = 0.92;
         metallic = 0.0;
     }
     // 3. Roof (matID == 0.35)
