@@ -17,6 +17,7 @@ uint32_t find_memory_type(VkPhysicalDevice physicalDevice, uint32_t typeFilter, 
     return UINT32_MAX;
 }
 
+/* Selecciona el primer formato de profundidad soportado con tiling óptimo. */
 static VkFormat findSupportedDepthFormat(VkPhysicalDevice physicalDevice) {
     VkFormat candidates[] = {
         VK_FORMAT_D32_SFLOAT,
@@ -34,6 +35,7 @@ static VkFormat findSupportedDepthFormat(VkPhysicalDevice physicalDevice) {
     return VK_FORMAT_UNDEFINED;
 }
 
+/* Libera vista, imagen y memoria (pool o dedicada) del buffer de profundidad. */
 static void destroy_depth_resources(VulkanEngine *eng) {
     if (eng->depthImageView != VK_NULL_HANDLE) {
         vkDestroyImageView(eng->device, eng->depthImageView, NULL);
@@ -236,27 +238,8 @@ int create_swapchain_and_depth(VulkanEngine *eng) {
     return create_depth_resources(eng);
 }
 
-int recreate_swapchain(VulkanEngine *eng) {
-    int width = 0, height = 0;
-    if (eng->window) {
-        SDL_Vulkan_GetDrawableSize(eng->window, &width, &height);
-        if (width == 0 || height == 0) {
-            return 0; // Retornar de inmediato sin bloquear la cola de eventos de SDL
-        }
-    }
-
-    vkDeviceWaitIdle(eng->device);
-
-    // 1. Destruir framebuffers actuales
-    destroy_framebuffers(eng);
-
-    // 2. Destruir recursos de profundidad actuales
-    destroy_depth_resources(eng);
-
-    // 3. Guardar swapchain antiguo
-    VkSwapchainKHR oldSwapchain = eng->swapchain;
-
-    // 4. Destruir ImageViews del swapchain antiguo
+/* Libera los ImageViews e imágenes actuales del swapchain. */
+static void destroy_swapchain_image_views(VulkanEngine *eng) {
     if (eng->swapchainImageViews) {
         for (uint32_t i = 0; i < eng->imageCount; i++) {
             if (eng->swapchainImageViews[i] != VK_NULL_HANDLE) {
@@ -270,68 +253,31 @@ int recreate_swapchain(VulkanEngine *eng) {
         free(eng->swapchainImages);
         eng->swapchainImages = NULL;
     }
+}
 
-    // 5. Consultar nuevas capacidades de la superficie
-    VkSurfaceCapabilitiesKHR surfCaps;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(eng->physicalDevice, eng->surface, &surfCaps);
-
-    eng->swapchainExtent = choose_swapchain_extent(&surfCaps, width, height);
-
-    eng->imageCount = surfCaps.minImageCount + 1;
-    if (surfCaps.maxImageCount > 0 && eng->imageCount > surfCaps.maxImageCount) {
-        eng->imageCount = surfCaps.maxImageCount;
-    }
-
-    // Consultar formato de superficie soportado (misma lógica que create_swapchain_and_depth)
+/* Selecciona el formato de superficie B8G8R8A8_SRGB si está disponible. */
+static VkSurfaceFormatKHR pick_swapchain_surface_format(VkPhysicalDevice physDev, VkSurfaceKHR surface) {
     uint32_t formatCount = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(eng->physicalDevice, eng->surface, &formatCount, NULL);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(physDev, surface, &formatCount, NULL);
     VkSurfaceFormatKHR surfaceFormat = { VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
-    if (formatCount > 0) {
-        VkSurfaceFormatKHR *formats = malloc(sizeof(VkSurfaceFormatKHR) * formatCount);
-        vkGetPhysicalDeviceSurfaceFormatsKHR(eng->physicalDevice, eng->surface, &formatCount, formats);
-        surfaceFormat = formats[0];
-        for (uint32_t i = 0; i < formatCount; i++) {
-            if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
-                formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-                surfaceFormat = formats[i];
-                break;
-            }
+    if (formatCount == 0) return surfaceFormat;
+
+    VkSurfaceFormatKHR *formats = malloc(sizeof(VkSurfaceFormatKHR) * formatCount);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(physDev, surface, &formatCount, formats);
+    surfaceFormat = formats[0];
+    for (uint32_t i = 0; i < formatCount; i++) {
+        if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
+            formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            surfaceFormat = formats[i];
+            break;
         }
-        free(formats);
     }
+    free(formats);
+    return surfaceFormat;
+}
 
-    VkSwapchainCreateInfoKHR swapchainCreateInfo = {0};
-    swapchainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    swapchainCreateInfo.surface = eng->surface;
-    swapchainCreateInfo.minImageCount = eng->imageCount;
-    swapchainCreateInfo.imageFormat = eng->swapchainImageFormat;
-    swapchainCreateInfo.imageColorSpace = surfaceFormat.colorSpace;
-    swapchainCreateInfo.imageExtent = eng->swapchainExtent;
-    swapchainCreateInfo.imageArrayLayers = 1;
-    swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    swapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    swapchainCreateInfo.preTransform = surfCaps.currentTransform;
-    swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    swapchainCreateInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
-    swapchainCreateInfo.clipped = VK_TRUE;
-    swapchainCreateInfo.oldSwapchain = oldSwapchain;
-
-    VkSwapchainKHR newSwapchain;
-    if (vkCreateSwapchainKHR(eng->device, &swapchainCreateInfo, NULL, &newSwapchain) != VK_SUCCESS) {
-        fprintf(stderr, "Fallo al recrear Swapchain\n");
-        if (oldSwapchain != VK_NULL_HANDLE) {
-            vkDestroySwapchainKHR(eng->device, oldSwapchain, NULL);
-        }
-        return 0;
-    }
-    eng->swapchain = newSwapchain;
-
-    // 6. Destruir swapchain antiguo
-    if (oldSwapchain != VK_NULL_HANDLE) {
-        vkDestroySwapchainKHR(eng->device, oldSwapchain, NULL);
-    }
-
-    // 7. Adquirir nuevas imágenes y crear ImageViews
+/* Adquiere las imágenes del swapchain y crea sus ImageViews 2D. */
+static int create_swapchain_image_views(VulkanEngine *eng) {
     vkGetSwapchainImagesKHR(eng->device, eng->swapchain, &eng->imageCount, NULL);
     eng->swapchainImages = malloc(sizeof(VkImage) * eng->imageCount);
     vkGetSwapchainImagesKHR(eng->device, eng->swapchain, &eng->imageCount, eng->swapchainImages);
@@ -357,16 +303,64 @@ int recreate_swapchain(VulkanEngine *eng) {
             return 0;
         }
     }
+    return 1;
+}
 
-    // 8. Recrear buffer de profundidad
-    if (!create_depth_resources(eng)) {
-        return 0;
+int recreate_swapchain(VulkanEngine *eng) {
+    int width = 0, height = 0;
+    if (eng->window) {
+        SDL_Vulkan_GetDrawableSize(eng->window, &width, &height);
+        if (width == 0 || height == 0) {
+            return 0;
+        }
     }
 
-    // 9. Recrear framebuffers
-    if (!create_framebuffers(eng)) {
+    vkDeviceWaitIdle(eng->device);
+    destroy_framebuffers(eng);
+    destroy_depth_resources(eng);
+
+    VkSwapchainKHR oldSwapchain = eng->swapchain;
+    destroy_swapchain_image_views(eng);
+
+    VkSurfaceCapabilitiesKHR surfCaps;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(eng->physicalDevice, eng->surface, &surfCaps);
+    eng->swapchainExtent = choose_swapchain_extent(&surfCaps, width, height);
+
+    eng->imageCount = surfCaps.minImageCount + 1;
+    if (surfCaps.maxImageCount > 0 && eng->imageCount > surfCaps.maxImageCount) {
+        eng->imageCount = surfCaps.maxImageCount;
+    }
+
+    VkSurfaceFormatKHR surfaceFormat = pick_swapchain_surface_format(eng->physicalDevice, eng->surface);
+
+    VkSwapchainCreateInfoKHR swapchainCreateInfo = {0};
+    swapchainCreateInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    swapchainCreateInfo.surface = eng->surface;
+    swapchainCreateInfo.minImageCount = eng->imageCount;
+    swapchainCreateInfo.imageFormat = eng->swapchainImageFormat;
+    swapchainCreateInfo.imageColorSpace = surfaceFormat.colorSpace;
+    swapchainCreateInfo.imageExtent = eng->swapchainExtent;
+    swapchainCreateInfo.imageArrayLayers = 1;
+    swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    swapchainCreateInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    swapchainCreateInfo.preTransform = surfCaps.currentTransform;
+    swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    swapchainCreateInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    swapchainCreateInfo.clipped = VK_TRUE;
+    swapchainCreateInfo.oldSwapchain = oldSwapchain;
+
+    VkSwapchainKHR newSwapchain;
+    if (vkCreateSwapchainKHR(eng->device, &swapchainCreateInfo, NULL, &newSwapchain) != VK_SUCCESS) {
+        fprintf(stderr, "Fallo al recrear Swapchain\n");
+        if (oldSwapchain != VK_NULL_HANDLE) vkDestroySwapchainKHR(eng->device, oldSwapchain, NULL);
         return 0;
     }
+    eng->swapchain = newSwapchain;
+    if (oldSwapchain != VK_NULL_HANDLE) vkDestroySwapchainKHR(eng->device, oldSwapchain, NULL);
+
+    if (!create_swapchain_image_views(eng)) return 0;
+    if (!create_depth_resources(eng)) return 0;
+    if (!create_framebuffers(eng)) return 0;
 
     eng->framebufferResized = 0;
     return 1;

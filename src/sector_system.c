@@ -148,6 +148,24 @@ static int ensure_sync_init(SectorSystem *ss) {
     return 1;
 }
 
+/* Extrae un campo flotante del manifiesto JSON o devuelve el valor por defecto. */
+static float parse_manifest_float(const char *json, const char *key, float fallback) {
+    char *p = strstr(json, key);
+    if (!p) return fallback;
+    p = strchr(p, ':');
+    float val = p ? (float)atof(p + 1) : fallback;
+    return val;
+}
+
+/* Comprueba si el archivo binario de sector existe en disco sin cargarlo. */
+static int sector_file_exists(const char *filepath) {
+    if (!filepath || filepath[0] == '\0') return 0;
+    FILE *probe = fopen(filepath, "rb");
+    if (!probe) return 0;
+    fclose(probe);
+    return 1;
+}
+
 int sector_system_init(SectorSystem *ss, const char *manifestPath) {
     if (!ss || !manifestPath) return 0;
     memset(ss, 0, sizeof(SectorSystem));
@@ -159,23 +177,13 @@ int sector_system_init(SectorSystem *ss, const char *manifestPath) {
         return 0;
     }
 
-    char *p = strstr(json, "\"macro_size\"");
-    if (p) {
-        p = strchr(p, ':');
-        if (p) ss->macroSize = (float)atof(p + 1);
-    }
+    ss->macroSize = parse_manifest_float(json, "\"macro_size\"", 1024.0f);
     if (ss->macroSize < 100.0f) ss->macroSize = 1024.0f;
-
-    p = strstr(json, "\"chunk_size\"");
-    if (p) {
-        p = strchr(p, ':');
-        if (p) ss->chunkSize = (float)atof(p + 1);
-    }
+    ss->chunkSize = parse_manifest_float(json, "\"chunk_size\"", 128.0f);
     if (ss->chunkSize < 10.0f) ss->chunkSize = 128.0f;
 
-    p = strstr(json, "\"sectors\"");
-    if (!p) { free(json); return 0; }
-    p = strchr(p, '[');
+    char *p = strstr(json, "\"sectors\"");
+    p = p ? strchr(p, '[') : NULL;
     if (!p) { free(json); return 0; }
 
     char *cursor = p + 1;
@@ -193,16 +201,10 @@ int sector_system_init(SectorSystem *ss, const char *manifestPath) {
         MacroSector *sec = &ss->sectors[sCount];
         parse_sector_entry(sec, secObj, secEnd);
 
-        if (sec->vertexCount > 0 && sec->filepath[0] != '\0') {
-            /* Sectores listados pero ausentes en disco: se omiten una sola vez en lugar
-             * de reintentar su lectura en cada actualización del streaming. */
-            FILE *probe = fopen(sec->filepath, "rb");
-            if (probe) {
-                fclose(probe);
-                sCount++;
-            } else {
-                missing++;
-            }
+        if (sec->vertexCount > 0 && sector_file_exists(sec->filepath)) {
+            sCount++;
+        } else if (sec->vertexCount > 0 && sec->filepath[0] != '\0') {
+            missing++;
         }
         cursor = secEnd;
     }
@@ -574,6 +576,55 @@ static int upload_sector_dedicated(struct VulkanEngine *eng, MacroSector *sec,
     return 1;
 }
 
+/*
+ * Ruta de respaldo en memoria host-visible cuando falla la carga por staging a VRAM.
+ * Intenta subasignar desde hostVisiblePool y, si no hay espacio, usa memoria dedicada.
+ */
+static int upload_sector_host_fallback(struct VulkanEngine *eng, MacroSector *sec,
+                                       VkDeviceSize vBufferSize, const Vertex *staged,
+                                       const uint8_t *rawBuf, uint32_t vcount) {
+    VkBufferCreateInfo vbInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = vBufferSize,
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+    if (vkCreateBuffer(eng->device, &vbInfo, NULL, &sec->vertexBuffer) != VK_SUCCESS) {
+        return 0;
+    }
+
+    VkMemoryRequirements vMemReq;
+    vkGetBufferMemoryRequirements(eng->device, sec->vertexBuffer, &vMemReq);
+
+    if (eng->hostVisiblePool.device != VK_NULL_HANDLE &&
+        vulkan_memory_pool_bind_buffer(&eng->hostVisiblePool, sec->vertexBuffer, &sec->vertexSub)) {
+        sec->vertexAllocSize = vMemReq.size;
+        sec->vertexInVramPool = 0;
+        if (sec->vertexSub.mappedPtr != NULL) {
+            write_sector_vertices(sec->vertexSub.mappedPtr, staged, rawBuf, vcount);
+            return 1;
+        }
+        void *tmpMapped = NULL;
+        if (vkMapMemory(eng->device, sec->vertexSub.memory, sec->vertexSub.offset,
+                        vBufferSize, 0, &tmpMapped) != VK_SUCCESS) {
+            vkDestroyBuffer(eng->device, sec->vertexBuffer, NULL);
+            vulkan_memory_pool_free_suballocation(&eng->hostVisiblePool, sec->vertexSub, sec->vertexAllocSize);
+            clear_sector_gpu_handles(sec);
+            return 0;
+        }
+        write_sector_vertices(tmpMapped, staged, rawBuf, vcount);
+        vkUnmapMemory(eng->device, sec->vertexSub.memory);
+        return 1;
+    }
+
+    if (!upload_sector_dedicated(eng, sec, &vMemReq, vBufferSize, staged, rawBuf, vcount)) {
+        vkDestroyBuffer(eng->device, sec->vertexBuffer, NULL);
+        clear_sector_gpu_handles(sec);
+        return 0;
+    }
+    return 1;
+}
+
 static int upload_sector_to_gpu_buffer(SectorSystem *ss, struct VulkanEngine *eng, MacroSector *sec,
                                        const Vertex *staged, const uint8_t *rawBuf, uint32_t vcount) {
     if (!ss || !eng || !sec || eng->device == VK_NULL_HANDLE || vcount == 0) return 0;
@@ -581,7 +632,6 @@ static int upload_sector_to_gpu_buffer(SectorSystem *ss, struct VulkanEngine *en
     if (sec->isLoaded) return 1;
 
     clear_sector_gpu_handles(sec);
-
     VkDeviceSize vBufferSize = (VkDeviceSize)vcount * sizeof(Vertex);
 
     int uploaded = 0;
@@ -592,43 +642,8 @@ static int upload_sector_to_gpu_buffer(SectorSystem *ss, struct VulkanEngine *en
         uploaded = upload_sector_vram_staged(eng, sec, vBufferSize, staged, rawBuf, vcount);
     }
 
-    if (!uploaded) {
-        VkBufferCreateInfo vbInfo = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = vBufferSize,
-            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
-        };
-        if (vkCreateBuffer(eng->device, &vbInfo, NULL, &sec->vertexBuffer) != VK_SUCCESS) {
-            return 0;
-        }
-
-        VkMemoryRequirements vMemReq;
-        vkGetBufferMemoryRequirements(eng->device, sec->vertexBuffer, &vMemReq);
-
-        if (eng->hostVisiblePool.device != VK_NULL_HANDLE &&
-            vulkan_memory_pool_bind_buffer(&eng->hostVisiblePool, sec->vertexBuffer, &sec->vertexSub)) {
-            sec->vertexAllocSize = vMemReq.size;
-            sec->vertexInVramPool = 0;
-            if (sec->vertexSub.mappedPtr != NULL) {
-                write_sector_vertices(sec->vertexSub.mappedPtr, staged, rawBuf, vcount);
-            } else {
-                void *tmpMapped = NULL;
-                if (vkMapMemory(eng->device, sec->vertexSub.memory, sec->vertexSub.offset,
-                                vBufferSize, 0, &tmpMapped) != VK_SUCCESS) {
-                    vkDestroyBuffer(eng->device, sec->vertexBuffer, NULL);
-                    vulkan_memory_pool_free_suballocation(&eng->hostVisiblePool, sec->vertexSub, sec->vertexAllocSize);
-                    clear_sector_gpu_handles(sec);
-                    return 0;
-                }
-                write_sector_vertices(tmpMapped, staged, rawBuf, vcount);
-                vkUnmapMemory(eng->device, sec->vertexSub.memory);
-            }
-        } else if (!upload_sector_dedicated(eng, sec, &vMemReq, vBufferSize, staged, rawBuf, vcount)) {
-            vkDestroyBuffer(eng->device, sec->vertexBuffer, NULL);
-            clear_sector_gpu_handles(sec);
-            return 0;
-        }
+    if (!uploaded && !upload_sector_host_fallback(eng, sec, vBufferSize, staged, rawBuf, vcount)) {
+        return 0;
     }
 
     if (ss->syncInitialized) pthread_mutex_lock(&ss->mutex);

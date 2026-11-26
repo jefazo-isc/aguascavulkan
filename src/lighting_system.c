@@ -57,6 +57,105 @@ void lighting_system_toggle_flashlight(LightingSystem *sys) {
     sys->flashlightEnabled = !sys->flashlightEnabled;
 }
 
+/* Recolecta luces dinámicas de semáforos dentro de 650m de la cámara. */
+static void gather_traffic_lights(const TrafficSystem *trafficSys, const Vec3 *camPos,
+                                  CandidateLight *candidates, int *candidateCount) {
+    if (!trafficSys) return;
+    for (size_t i = 0; i < trafficSys->signalCount && *candidateCount < 500; ++i) {
+        const TrafficSignal *sig = &trafficSys->signals[i];
+        float dx = sig->x - camPos->x;
+        float dy = sig->y - camPos->y;
+        float dz = sig->z - camPos->z;
+        float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= 650.0f * 650.0f) continue;
+
+        CandidateLight *c = &candidates[(*candidateCount)++];
+        c->distSq = d2;
+        c->light.posRadius[0] = sig->x;
+        c->light.posRadius[1] = sig->y;
+        c->light.posRadius[2] = sig->z;
+        c->light.posRadius[3] = 22.0f;
+
+        if (sig->currentState == TRAFFIC_LIGHT_RED) {
+            c->light.colorIntensity[0] = 1.0f; c->light.colorIntensity[1] = 0.04f; c->light.colorIntensity[2] = 0.04f;
+        } else if (sig->currentState == TRAFFIC_LIGHT_AMBER) {
+            c->light.colorIntensity[0] = 1.0f; c->light.colorIntensity[1] = 0.65f; c->light.colorIntensity[2] = 0.0f;
+        } else {
+            c->light.colorIntensity[0] = 0.0f; c->light.colorIntensity[1] = 1.0f;  c->light.colorIntensity[2] = 0.35f;
+        }
+        c->light.colorIntensity[3] = 4.2f;
+    }
+}
+
+/* Recolecta luminarias viales activas durante atardecer/noche dentro de 700m. */
+static void gather_streetlights(const LightingSystem *sys, const Vec3 *camPos, float streetFactor,
+                                CandidateLight *candidates, int *candidateCount) {
+    if (streetFactor <= 0.02f) return;
+    for (int i = 0; i < sys->streetlightCount && *candidateCount < 500; ++i) {
+        const SceneLight *sl = &sys->streetlights[i];
+        float dx = sl->x - camPos->x;
+        float dy = sl->y - camPos->y;
+        float dz = sl->z - camPos->z;
+        float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= 700.0f * 700.0f) continue;
+
+        CandidateLight *c = &candidates[(*candidateCount)++];
+        c->distSq = d2;
+        c->light.posRadius[0] = sl->x;
+        c->light.posRadius[1] = sl->y;
+        c->light.posRadius[2] = sl->z;
+        c->light.posRadius[3] = sl->radius;
+        c->light.colorIntensity[0] = sl->r;
+        c->light.colorIntensity[1] = sl->g;
+        c->light.colorIntensity[2] = sl->b;
+        c->light.colorIntensity[3] = sl->baseIntensity * streetFactor;
+    }
+}
+
+/* Recolecta balizas Gemini AI dentro de 850m de la cámara. */
+static void gather_beacons(const Vec3 *camPos, CandidateLight *candidates, int *candidateCount) {
+    for (int b = 0; b < LIGHTING_NUM_BEACONS && *candidateCount < 500; ++b) {
+        const LightingBeacon *bk = &g_lighting_beacons[b];
+        float dx = bk->x - camPos->x;
+        float dy = bk->y - camPos->y;
+        float dz = bk->z - camPos->z;
+        float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= 850.0f * 850.0f) continue;
+
+        CandidateLight *c = &candidates[(*candidateCount)++];
+        c->distSq = d2;
+        c->light.posRadius[0] = bk->x;
+        c->light.posRadius[1] = bk->y;
+        c->light.posRadius[2] = bk->z;
+        c->light.posRadius[3] = bk->radius;
+        c->light.colorIntensity[0] = bk->r;
+        c->light.colorIntensity[1] = bk->g;
+        c->light.colorIntensity[2] = bk->b;
+        c->light.colorIntensity[3] = bk->intensity;
+    }
+}
+
+/* Selecciona las MAX_GPU_LIGHTS más cercanas mediante ordenamiento parcial. */
+static void select_nearest_lights(CandidateLight *candidates, int candidateCount,
+                                  LightingUBO *outUbo) {
+    int selectCount = candidateCount < MAX_GPU_LIGHTS ? candidateCount : MAX_GPU_LIGHTS;
+    for (int i = 0; i < selectCount; ++i) {
+        int bestIdx = i;
+        for (int j = i + 1; j < candidateCount; ++j) {
+            if (candidates[j].distSq < candidates[bestIdx].distSq) {
+                bestIdx = j;
+            }
+        }
+        if (bestIdx != i) {
+            CandidateLight tmp = candidates[i];
+            candidates[i] = candidates[bestIdx];
+            candidates[bestIdx] = tmp;
+        }
+        outUbo->lights[i] = candidates[i].light;
+    }
+    outUbo->lightCount = selectCount;
+}
+
 void lighting_system_update(LightingSystem *sys,
                             const TrafficSystem *trafficSys,
                             float simHour,
@@ -78,108 +177,10 @@ void lighting_system_update(LightingSystem *sys,
     CandidateLight candidates[512];
     int candidateCount = 0;
 
-    /* 2. Luces dinámicas de Semáforos activos (Rojo, Ámbar o Verde) */
-    if (trafficSys) {
-        for (size_t i = 0; i < trafficSys->signalCount && candidateCount < 500; ++i) {
-            const TrafficSignal *sig = &trafficSys->signals[i];
-            float dx = sig->x - camPos->x;
-            float dy = sig->y - camPos->y;
-            float dz = sig->z - camPos->z;
-            float d2 = dx * dx + dy * dy + dz * dz;
-
-            /* Rango amplio de selección (650m) */
-            if (d2 < 650.0f * 650.0f) {
-                CandidateLight *c = &candidates[candidateCount++];
-                c->distSq = d2;
-                c->light.posRadius[0] = sig->x;
-                c->light.posRadius[1] = sig->y;
-                c->light.posRadius[2] = sig->z;
-                c->light.posRadius[3] = 22.0f;
-
-                if (sig->currentState == TRAFFIC_LIGHT_RED) {
-                    c->light.colorIntensity[0] = 1.0f;
-                    c->light.colorIntensity[1] = 0.04f;
-                    c->light.colorIntensity[2] = 0.04f;
-                    c->light.colorIntensity[3] = 4.2f;
-                } else if (sig->currentState == TRAFFIC_LIGHT_AMBER) {
-                    c->light.colorIntensity[0] = 1.0f;
-                    c->light.colorIntensity[1] = 0.65f;
-                    c->light.colorIntensity[2] = 0.0f;
-                    c->light.colorIntensity[3] = 4.2f;
-                } else { /* GREEN */
-                    c->light.colorIntensity[0] = 0.0f;
-                    c->light.colorIntensity[1] = 1.0f;
-                    c->light.colorIntensity[2] = 0.35f;
-                    c->light.colorIntensity[3] = 4.2f;
-                }
-            }
-        }
-    }
-
-    /* 3. Farolas de Alumbrado Público (cuando cae la tarde o es de noche) */
-    if (streetFactor > 0.02f) {
-        for (int i = 0; i < sys->streetlightCount && candidateCount < 500; ++i) {
-            const SceneLight *sl = &sys->streetlights[i];
-            float dx = sl->x - camPos->x;
-            float dy = sl->y - camPos->y;
-            float dz = sl->z - camPos->z;
-            float d2 = dx * dx + dy * dy + dz * dz;
-
-            if (d2 < 700.0f * 700.0f) {
-                CandidateLight *c = &candidates[candidateCount++];
-                c->distSq = d2;
-                c->light.posRadius[0] = sl->x;
-                c->light.posRadius[1] = sl->y;
-                c->light.posRadius[2] = sl->z;
-                c->light.posRadius[3] = sl->radius;
-                c->light.colorIntensity[0] = sl->r;
-                c->light.colorIntensity[1] = sl->g;
-                c->light.colorIntensity[2] = sl->b;
-                c->light.colorIntensity[3] = sl->baseIntensity * streetFactor;
-            }
-        }
-    }
-
-    /* 4. Balizas de Modelos Gemini AI (Beacons con luz vertical cyan)
-     * NOTA: posiciones cargadas desde LIGHTING_BEACONS[], definido en lighting_system.h */
-    for (int b = 0; b < LIGHTING_NUM_BEACONS && candidateCount < 500; ++b) {
-        const LightingBeacon *bk = &g_lighting_beacons[b];
-        float dx = bk->x - camPos->x;
-        float dy = bk->y - camPos->y;
-        float dz = bk->z - camPos->z;
-        float d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < 850.0f * 850.0f) {
-            CandidateLight *c = &candidates[candidateCount++];
-            c->distSq = d2;
-            c->light.posRadius[0] = bk->x;
-            c->light.posRadius[1] = bk->y;
-            c->light.posRadius[2] = bk->z;
-            c->light.posRadius[3] = bk->radius;
-            c->light.colorIntensity[0] = bk->r;
-            c->light.colorIntensity[1] = bk->g;
-            c->light.colorIntensity[2] = bk->b;
-            c->light.colorIntensity[3] = bk->intensity;
-        }
-    }
-
-    /* 5. Selección rápida de las 64 luces más cercanas por Selection Sort parcial
-     * (O(n*k) con k=MAX_GPU_LIGHTS=64 y n<=500 → ~32 000 comparaciones/frame, aceptable) */
-    int selectCount = candidateCount < MAX_GPU_LIGHTS ? candidateCount : MAX_GPU_LIGHTS;
-    for (int i = 0; i < selectCount; ++i) {
-        int bestIdx = i;
-        for (int j = i + 1; j < candidateCount; ++j) {
-            if (candidates[j].distSq < candidates[bestIdx].distSq) {
-                bestIdx = j;
-            }
-        }
-        if (bestIdx != i) {
-            CandidateLight tmp = candidates[i];
-            candidates[i] = candidates[bestIdx];
-            candidates[bestIdx] = tmp;
-        }
-        outUbo->lights[i] = candidates[i].light;
-    }
-    outUbo->lightCount = selectCount;
+    gather_traffic_lights(trafficSys, camPos, candidates, &candidateCount);
+    gather_streetlights(sys, camPos, streetFactor, candidates, &candidateCount);
+    gather_beacons(camPos, candidates, &candidateCount);
+    select_nearest_lights(candidates, candidateCount, outUbo);
 
     /* 6. Configurar Linterna de Inspección del Jugador */
     outUbo->flashlightOn = sys->flashlightEnabled ? 1.0f : 0.0f;

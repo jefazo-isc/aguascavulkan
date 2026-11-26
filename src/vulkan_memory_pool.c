@@ -51,43 +51,42 @@ static void insert_free_region(VulkanMemoryPool *pool, VkDeviceMemory memory,
     };
 }
 
+/*
+ * Recorre un arreglo de regiones libres buscando la de menor tamaño que cumpla
+ * con el alineamiento y tamaño solicitados (estrategia best-fit).
+ */
+static void scan_free_region_array(const VulkanFreeRegion *regions, uint32_t count,
+                                   VkDeviceSize size, VkDeviceSize alignment,
+                                   uint32_t *bestIdx, int *bestInExtra, int isExtra,
+                                   VkDeviceSize *bestSize, VkDeviceSize *bestAlignedOffset) {
+    for (uint32_t i = 0; i < count; i++) {
+        const VulkanFreeRegion *r = &regions[i];
+        VkDeviceSize regionEnd = r->offset + r->size;
+        VkDeviceSize alignedOffset = align_up(r->offset, alignment);
+        if (alignedOffset < r->offset || alignedOffset > regionEnd) continue;
+        if (size > regionEnd - alignedOffset) continue;
+
+        if (*bestIdx == UINT32_MAX || r->size < *bestSize) {
+            *bestIdx = i;
+            *bestInExtra = isExtra;
+            *bestSize = r->size;
+            *bestAlignedOffset = alignedOffset;
+        }
+    }
+}
+
+/* Busca la mejor región libre entre el bloque principal y los bloques extra. */
 static int suballocate_from_free_regions(VulkanMemoryPool *pool, VkDeviceSize size,
                                          VkDeviceSize alignment, VulkanSuballocation *outSub) {
     uint32_t bestIdx = UINT32_MAX;
     int bestInExtra = 0;
+    VkDeviceSize bestSize = 0;
     VkDeviceSize bestAlignedOffset = 0;
 
-    for (uint32_t i = 0; i < pool->freeRegionCount; i++) {
-        VulkanFreeRegion *r = &pool->freeRegions[i];
-        VkDeviceSize regionEnd = r->offset + r->size;
-        VkDeviceSize alignedOffset = align_up(r->offset, alignment);
-        if (alignedOffset < r->offset || alignedOffset > regionEnd) continue;
-        if (size > regionEnd - alignedOffset) continue;
-
-        VkDeviceSize currentBestSize = (bestIdx == UINT32_MAX) ? 0 :
-            (bestInExtra ? pool->extraFreeRegions[bestIdx].size : pool->freeRegions[bestIdx].size);
-        if (bestIdx == UINT32_MAX || r->size < currentBestSize) {
-            bestIdx = i;
-            bestInExtra = 0;
-            bestAlignedOffset = alignedOffset;
-        }
-    }
-
-    for (uint32_t i = 0; i < pool->extraFreeRegionCount; i++) {
-        VulkanFreeRegion *r = &pool->extraFreeRegions[i];
-        VkDeviceSize regionEnd = r->offset + r->size;
-        VkDeviceSize alignedOffset = align_up(r->offset, alignment);
-        if (alignedOffset < r->offset || alignedOffset > regionEnd) continue;
-        if (size > regionEnd - alignedOffset) continue;
-
-        VkDeviceSize currentBestSize = (bestIdx == UINT32_MAX) ? 0 :
-            (bestInExtra ? pool->extraFreeRegions[bestIdx].size : pool->freeRegions[bestIdx].size);
-        if (bestIdx == UINT32_MAX || r->size < currentBestSize) {
-            bestIdx = i;
-            bestInExtra = 1;
-            bestAlignedOffset = alignedOffset;
-        }
-    }
+    scan_free_region_array(pool->freeRegions, pool->freeRegionCount, size, alignment,
+                           &bestIdx, &bestInExtra, 0, &bestSize, &bestAlignedOffset);
+    scan_free_region_array(pool->extraFreeRegions, pool->extraFreeRegionCount, size, alignment,
+                           &bestIdx, &bestInExtra, 1, &bestSize, &bestAlignedOffset);
 
     if (bestIdx == UINT32_MAX) return 0;
 

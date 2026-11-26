@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 
+/* Precalcula la longitud euclidiana de cada arista (mínimo 0.1m para evitar división por cero). */
 static int road_graph_build_edge_lengths(RoadGraph* graph) {
     if (graph->n_edges == 0) {
         graph->edge_lengths = NULL;
@@ -34,25 +35,21 @@ static int road_graph_build_edge_lengths(RoadGraph* graph) {
     return 1;
 }
 
-static int road_graph_build_csr(RoadGraph* graph) {
+/* Verifica que una arista tenga al menos 2 puntos dentro del rango del arreglo de puntos. */
+static int road_edge_is_valid(const RoadGraph* graph, const RoadEdge* edge) {
+    if (edge->pt_count < 2) return 0;
+    return (uint64_t)edge->pt_off + (uint64_t)edge->pt_count <= (uint64_t)graph->n_points;
+}
+
+/* Cuenta incidencias nodo-arista válidas para dimensionar la tabla CSR. */
+static int road_graph_count_incidences(RoadGraph* graph, uint64_t* out_total) {
     uint32_t n_nodes = graph->n_nodes;
-    uint32_t n_edges = graph->n_edges;
-
-    graph->node_edge_offsets = (uint32_t*)calloc((size_t)n_nodes + 1, sizeof(uint32_t));
-    if (!graph->node_edge_offsets) {
-        return 0;
-    }
-
-    if (n_nodes == 0 || n_edges == 0) {
-        graph->total_incidences = 0;
-        return 1;
-    }
-
     uint64_t total_inc = 0;
-    for (uint32_t e = 0; e < n_edges; e++) {
+
+    for (uint32_t e = 0; e < graph->n_edges; e++) {
         const RoadEdge* edge = &graph->edges[e];
-        if (edge->pt_count < 2) continue;
-        if ((uint64_t)edge->pt_off + (uint64_t)edge->pt_count > (uint64_t)graph->n_points) continue;
+        if (!road_edge_is_valid(graph, edge)) continue;
+
         if (edge->a < n_nodes) {
             if (graph->node_edge_offsets[edge->a + 1] == UINT32_MAX) return 0;
             graph->node_edge_offsets[edge->a + 1]++;
@@ -64,34 +61,17 @@ static int road_graph_build_csr(RoadGraph* graph) {
             total_inc++;
         }
     }
+    if (total_inc > UINT32_MAX) return 0;
+    *out_total = total_inc;
+    return 1;
+}
 
-    if (total_inc > UINT32_MAX) {
-        return 0;
-    }
-
-    for (uint32_t n = 0; n < n_nodes; n++) {
-        graph->node_edge_offsets[n + 1] += graph->node_edge_offsets[n];
-    }
-    graph->total_incidences = (uint32_t)total_inc;
-
-    if (graph->total_incidences == 0) {
-        return 1;
-    }
-
-    graph->node_edge_indices = (uint32_t*)malloc((size_t)graph->total_incidences * sizeof(uint32_t));
-    graph->node_edge_dirs = (uint8_t*)malloc((size_t)graph->total_incidences * sizeof(uint8_t));
-    uint32_t* cursor = (uint32_t*)malloc((size_t)n_nodes * sizeof(uint32_t));
-    if (!graph->node_edge_indices || !graph->node_edge_dirs || !cursor) {
-        free(cursor);
-        return 0;
-    }
-
-    memcpy(cursor, graph->node_edge_offsets, (size_t)n_nodes * sizeof(uint32_t));
-
-    for (uint32_t e = 0; e < n_edges; e++) {
+/* Rellena los arreglos node_edge_indices y node_edge_dirs del CSR. */
+static void road_graph_populate_csr(RoadGraph* graph, uint32_t* cursor) {
+    uint32_t n_nodes = graph->n_nodes;
+    for (uint32_t e = 0; e < graph->n_edges; e++) {
         const RoadEdge* edge = &graph->edges[e];
-        if (edge->pt_count < 2) continue;
-        if ((uint64_t)edge->pt_off + (uint64_t)edge->pt_count > (uint64_t)graph->n_points) continue;
+        if (!road_edge_is_valid(graph, edge)) continue;
         if (edge->a < n_nodes) {
             uint32_t pos = cursor[edge->a]++;
             graph->node_edge_indices[pos] = e;
@@ -103,8 +83,78 @@ static int road_graph_build_csr(RoadGraph* graph) {
             graph->node_edge_dirs[pos] = 1;
         }
     }
+}
 
+/* Construye la tabla de adyacencia CSR (Compressed Sparse Row) para consultas rápidas por nodo. */
+static int road_graph_build_csr(RoadGraph* graph) {
+    uint32_t n_nodes = graph->n_nodes;
+    graph->node_edge_offsets = (uint32_t*)calloc((size_t)n_nodes + 1, sizeof(uint32_t));
+    if (!graph->node_edge_offsets) return 0;
+
+    if (n_nodes == 0 || graph->n_edges == 0) {
+        graph->total_incidences = 0;
+        return 1;
+    }
+
+    uint64_t total_inc = 0;
+    if (!road_graph_count_incidences(graph, &total_inc)) return 0;
+
+    for (uint32_t n = 0; n < n_nodes; n++) {
+        graph->node_edge_offsets[n + 1] += graph->node_edge_offsets[n];
+    }
+    graph->total_incidences = (uint32_t)total_inc;
+    if (graph->total_incidences == 0) return 1;
+
+    graph->node_edge_indices = (uint32_t*)malloc((size_t)graph->total_incidences * sizeof(uint32_t));
+    graph->node_edge_dirs = (uint8_t*)malloc((size_t)graph->total_incidences * sizeof(uint8_t));
+    uint32_t* cursor = (uint32_t*)malloc((size_t)n_nodes * sizeof(uint32_t));
+    if (!graph->node_edge_indices || !graph->node_edge_dirs || !cursor) {
+        free(cursor);
+        return 0;
+    }
+
+    memcpy(cursor, graph->node_edge_offsets, (size_t)n_nodes * sizeof(uint32_t));
+    road_graph_populate_csr(graph, cursor);
     free(cursor);
+    return 1;
+}
+
+/* Valida el magic 'RGP1' y lee los conteos del encabezado binario. */
+static int road_graph_read_header(FILE* f, const char* filepath,
+                                  uint32_t* n_nodes, uint32_t* n_edges, uint32_t* n_points) {
+    char magic[4];
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "RGP1", 4) != 0) {
+        fprintf(stderr, "[RoadGraph] Error: Formato invalido en %s (magic no es RGP1)\n", filepath);
+        return 0;
+    }
+    if (fread(n_nodes, sizeof(uint32_t), 1, f) != 1 ||
+        fread(n_edges, sizeof(uint32_t), 1, f) != 1 ||
+        fread(n_points, sizeof(uint32_t), 1, f) != 1) {
+        fprintf(stderr, "[RoadGraph] Error leyendo header de %s\n", filepath);
+        return 0;
+    }
+    return 1;
+}
+
+/* Reserva memoria y lee nodos, aristas y puntos desde el archivo binario. */
+static int road_graph_alloc_and_read_arrays(FILE* f, const char* filepath, RoadGraph* graph) {
+    if (graph->n_nodes > 0) graph->nodes = (RoadNode*)malloc((size_t)graph->n_nodes * sizeof(RoadNode));
+    if (graph->n_edges > 0) graph->edges = (RoadEdge*)malloc((size_t)graph->n_edges * sizeof(RoadEdge));
+    if (graph->n_points > 0) graph->points = (RoadPoint*)malloc((size_t)graph->n_points * sizeof(RoadPoint));
+
+    if ((graph->n_nodes > 0 && !graph->nodes) ||
+        (graph->n_edges > 0 && !graph->edges) ||
+        (graph->n_points > 0 && !graph->points)) {
+        fprintf(stderr, "[RoadGraph] Error de memoria asignando buffers\n");
+        return 0;
+    }
+
+    if ((graph->n_nodes > 0 && fread(graph->nodes, sizeof(RoadNode), graph->n_nodes, f) != graph->n_nodes) ||
+        (graph->n_edges > 0 && fread(graph->edges, sizeof(RoadEdge), graph->n_edges, f) != graph->n_edges) ||
+        (graph->n_points > 0 && fread(graph->points, sizeof(RoadPoint), graph->n_points, f) != graph->n_points)) {
+        fprintf(stderr, "[RoadGraph] Error leyendo datos binarios de %s\n", filepath);
+        return 0;
+    }
     return 1;
 }
 
@@ -120,18 +170,8 @@ RoadGraph* road_graph_load(const char* filepath) {
         return NULL;
     }
 
-    char magic[4];
     uint32_t n_nodes = 0, n_edges = 0, n_points = 0;
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "RGP1", 4) != 0) {
-        fprintf(stderr, "[RoadGraph] Error: Formato invalido en %s (magic no es RGP1)\n", filepath);
-        fclose(f);
-        return NULL;
-    }
-
-    if (fread(&n_nodes, sizeof(uint32_t), 1, f) != 1 ||
-        fread(&n_edges, sizeof(uint32_t), 1, f) != 1 ||
-        fread(&n_points, sizeof(uint32_t), 1, f) != 1) {
-        fprintf(stderr, "[RoadGraph] Error leyendo header de %s\n", filepath);
+    if (!road_graph_read_header(f, filepath, &n_nodes, &n_edges, &n_points)) {
         fclose(f);
         return NULL;
     }
@@ -141,33 +181,15 @@ RoadGraph* road_graph_load(const char* filepath) {
         fclose(f);
         return NULL;
     }
-
     graph->n_nodes = n_nodes;
     graph->n_edges = n_edges;
     graph->n_points = n_points;
 
-    if (n_nodes > 0) graph->nodes = (RoadNode*)malloc((size_t)n_nodes * sizeof(RoadNode));
-    if (n_edges > 0) graph->edges = (RoadEdge*)malloc((size_t)n_edges * sizeof(RoadEdge));
-    if (n_points > 0) graph->points = (RoadPoint*)malloc((size_t)n_points * sizeof(RoadPoint));
-
-    if ((n_nodes > 0 && !graph->nodes) ||
-        (n_edges > 0 && !graph->edges) ||
-        (n_points > 0 && !graph->points)) {
-        fprintf(stderr, "[RoadGraph] Error de memoria asignando buffers\n");
+    if (!road_graph_alloc_and_read_arrays(f, filepath, graph)) {
         road_graph_free(graph);
         fclose(f);
         return NULL;
     }
-
-    if ((n_nodes > 0 && fread(graph->nodes, sizeof(RoadNode), n_nodes, f) != n_nodes) ||
-        (n_edges > 0 && fread(graph->edges, sizeof(RoadEdge), n_edges, f) != n_edges) ||
-        (n_points > 0 && fread(graph->points, sizeof(RoadPoint), n_points, f) != n_points)) {
-        fprintf(stderr, "[RoadGraph] Error leyendo datos binarios de %s\n", filepath);
-        road_graph_free(graph);
-        fclose(f);
-        return NULL;
-    }
-
     fclose(f);
 
     if (!road_graph_build_edge_lengths(graph) || !road_graph_build_csr(graph)) {

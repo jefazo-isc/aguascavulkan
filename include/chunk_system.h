@@ -34,26 +34,62 @@ typedef struct {
  * Formato esperado: {"chunk_size":128,"chunks":[{"cx":0,"cz":0,"start":0,"count":1234,
  *   "min_x":...,"min_y":...,"min_z":...,"max_x":...,"max_y":...,"max_z":...}, ...]}
  * Usamos un parser manual mínimo para evitar dependencias. */
-static inline int chunk_system_load(ChunkSystem *cs, const char *filepath) {
-    memset(cs, 0, sizeof(ChunkSystem));
+static inline float chunk_parse_float_field(const char *obj, const char *obj_end, const char *name) {
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", name);
+    const char *p = strstr(obj, pattern);
+    if (!p || p >= obj_end) return 0.0f;
+    p = strchr(p, ':');
+    return p ? (float)atof(p + 1) : 0.0f;
+}
+
+static inline int chunk_parse_int_field(const char *obj, const char *obj_end, const char *name) {
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", name);
+    const char *p = strstr(obj, pattern);
+    if (!p || p >= obj_end) return 0;
+    p = strchr(p, ':');
+    return p ? atoi(p + 1) : 0;
+}
+
+static inline char *chunk_read_file_alloc(const char *filepath) {
     FILE *f = fopen(filepath, "r");
     if (!f) {
         fprintf(stderr, "[Chunks] No se pudo abrir: %s\n", filepath);
-        return 0;
+        return NULL;
     }
-
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (fsize <= 0) { fclose(f); return 0; }
+    if (fsize <= 0) { fclose(f); return NULL; }
     char *json = (char*)malloc((size_t)fsize + 1);
-    if (!json) { fclose(f); return 0; }
+    if (!json) { fclose(f); return NULL; }
     size_t nread = fread(json, 1, (size_t)fsize, f);
     (void)nread;
     json[fsize] = '\0';
     fclose(f);
+    return json;
+}
 
-    /* Parse chunk_size */
+static inline void chunk_parse_entry(Chunk *c, const char *obj, const char *obj_end) {
+    memset(c, 0, sizeof(Chunk));
+    c->cx = chunk_parse_int_field(obj, obj_end, "cx");
+    c->cz = chunk_parse_int_field(obj, obj_end, "cz");
+    c->start = chunk_parse_int_field(obj, obj_end, "start");
+    c->count = chunk_parse_int_field(obj, obj_end, "count");
+    c->aabb.min_x = chunk_parse_float_field(obj, obj_end, "min_x");
+    c->aabb.min_y = chunk_parse_float_field(obj, obj_end, "min_y");
+    c->aabb.min_z = chunk_parse_float_field(obj, obj_end, "min_z");
+    c->aabb.max_x = chunk_parse_float_field(obj, obj_end, "max_x");
+    c->aabb.max_y = chunk_parse_float_field(obj, obj_end, "max_y");
+    c->aabb.max_z = chunk_parse_float_field(obj, obj_end, "max_z");
+}
+
+static inline int chunk_system_load(ChunkSystem *cs, const char *filepath) {
+    memset(cs, 0, sizeof(ChunkSystem));
+    char *json = chunk_read_file_alloc(filepath);
+    if (!json) return 0;
+
     char *p = strstr(json, "\"chunk_size\"");
     if (p) {
         p = strchr(p, ':');
@@ -61,47 +97,19 @@ static inline int chunk_system_load(ChunkSystem *cs, const char *filepath) {
     }
     if (cs->chunkSize < 1.0f) cs->chunkSize = 128.0f;
 
-    /* Parse chunks array */
     p = strstr(json, "\"chunks\"");
-    if (!p) { free(json); return 0; }
-    p = strchr(p, '[');
+    p = p ? strchr(p, '[') : NULL;
     if (!p) { free(json); return 0; }
 
     int count = 0;
     char *cursor = p + 1;
     while (count < MAX_CHUNKS) {
         char *obj = strchr(cursor, '{');
-        if (!obj) break;
-        char *obj_end = strchr(obj, '}');
-        if (!obj_end) break;
+        char *obj_end = obj ? strchr(obj, '}') : NULL;
+        if (!obj || !obj_end) break;
 
         Chunk *c = &cs->chunks[count];
-        memset(c, 0, sizeof(Chunk));
-
-        /* Helper macro to parse a field */
-        #define PARSE_INT(field, name) do { \
-            char *_p = strstr(obj, "\"" name "\""); \
-            if (_p && _p < obj_end) { _p = strchr(_p, ':'); if (_p) c->field = atoi(_p + 1); } \
-        } while(0)
-        #define PARSE_FLOAT(field, name) do { \
-            char *_p = strstr(obj, "\"" name "\""); \
-            if (_p && _p < obj_end) { _p = strchr(_p, ':'); if (_p) c->field = (float)atof(_p + 1); } \
-        } while(0)
-
-        PARSE_INT(cx, "cx");
-        PARSE_INT(cz, "cz");
-        PARSE_INT(start, "start");
-        PARSE_INT(count, "count");
-        PARSE_FLOAT(aabb.min_x, "min_x");
-        PARSE_FLOAT(aabb.min_y, "min_y");
-        PARSE_FLOAT(aabb.min_z, "min_z");
-        PARSE_FLOAT(aabb.max_x, "max_x");
-        PARSE_FLOAT(aabb.max_y, "max_y");
-        PARSE_FLOAT(aabb.max_z, "max_z");
-
-        #undef PARSE_INT
-        #undef PARSE_FLOAT
-
+        chunk_parse_entry(c, obj, obj_end);
         if (c->count > 0) {
             cs->totalVerts += c->count;
             count++;
