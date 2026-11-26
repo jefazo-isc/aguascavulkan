@@ -1819,5 +1819,125 @@ process.stdout.write(JSON.stringify(out));
             self.assertTrue(cell["uvInAtlas"], key)
 
 
+class TestSectorManagerResolution(unittest.TestCase):
+    """Ensure GitHub Pages external_base_url never breaks local sector_0_0.glb or assets."""
+
+    def test_resolve_manifest_and_fallback_to_flat_external_url(self):
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node is not installed in PATH")
+
+        script = r"""
+const requestedUrls = [];
+const validGlb = (() => {
+    const jsonStr = JSON.stringify({
+        asset: { version: '2.0' },
+        buffers: [{ byteLength: 60 }],
+        bufferViews: [
+            { buffer: 0, byteOffset: 0, byteLength: 36 },
+            { buffer: 0, byteOffset: 36, byteLength: 12 },
+            { buffer: 0, byteOffset: 48, byteLength: 12 },
+        ],
+        accessors: [
+            { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+            { bufferView: 1, componentType: 5125, count: 3, type: 'SCALAR' },
+        ],
+        meshes: [{ name: 'm', primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+        nodes: [{ mesh: 0 }],
+        scenes: [{ nodes: [0] }],
+    });
+    const jPad = (4 - (jsonStr.length % 4)) % 4;
+    const jBytes = Buffer.from(jsonStr + ' '.repeat(jPad), 'utf8');
+    const bBytes = Buffer.alloc(60);
+    const dv = new DataView(bBytes.buffer);
+    dv.setFloat32(0, 0, true); dv.setFloat32(4, 0, true); dv.setFloat32(8, 0, true);
+    dv.setFloat32(12, 1, true); dv.setFloat32(16, 0, true); dv.setFloat32(20, 0, true);
+    dv.setFloat32(24, 0, true); dv.setFloat32(28, 1, true); dv.setFloat32(32, 0, true);
+    dv.setUint32(36, 0, true); dv.setUint32(40, 1, true); dv.setUint32(44, 2, true);
+    const total = 12 + 8 + jBytes.length + 8 + bBytes.length;
+    const out = Buffer.alloc(total);
+    out.writeUInt32LE(0x46546C67, 0);
+    out.writeUInt32LE(2, 4);
+    out.writeUInt32LE(total, 8);
+    out.writeUInt32LE(jBytes.length, 12);
+    out.writeUInt32LE(0x4E4F534A, 16);
+    jBytes.copy(out, 20);
+    const binHdr = 20 + jBytes.length;
+    out.writeUInt32LE(bBytes.length, binHdr);
+    out.writeUInt32LE(0x004E4942, binHdr + 4);
+    bBytes.copy(out, binHdr + 8);
+    return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+})();
+
+globalThis.fetch = async (url) => {
+    requestedUrls.push(url);
+    if (url === '../models/sectors.json') {
+        return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+                macro_size: 1024,
+                chunk_size: 128,
+                external_base_url: 'https://cdn.example.test/releases/download/sectors-v1/',
+                sectors: [
+                    { mx: 0, mz: 0, file: 'models/sectors/sector_0_0.glb', vert_count: 100 },
+                    { mx: 1, mz: 0, file: 'models/sectors/sector_1_0.glb', vert_count: 100 },
+                ],
+            }),
+        };
+    }
+    if (url === '../models/sectors/sector_0_0.glb' || url === 'https://cdn.example.test/releases/download/sectors-v1/sector_1_0.glb') {
+        return {
+            ok: true,
+            status: 200,
+            headers: { get: () => String(validGlb.byteLength) },
+            arrayBuffer: async () => validGlb.slice(0),
+        };
+    }
+    if (url === '../models/sectors/chunks_0_0.json' || url === 'https://cdn.example.test/releases/download/sectors-v1/chunks_1_0.json') {
+        return {
+            ok: true,
+            status: 200,
+            json: async () => ({ chunks: [{ cx: 0, cz: 0, start: 0, count: 3, min_x: 0, min_y: 0, min_z: 0, max_x: 1, max_y: 1, max_z: 1 }] }),
+        };
+    }
+    return { ok: false, status: 404 };
+};
+
+const { resolveSectorManifest, SectorManager } = await import('./web/sector-manager.js');
+const manifestInfo = await resolveSectorManifest();
+const uploaded = [];
+const mockRenderer = { uploadSector: (k) => uploaded.push(k), unloadSector: () => {} };
+const mgr = new SectorManager(mockRenderer, new Float32Array(128), {}, { backend: 'WebGL2' });
+mgr.setManifest(manifestInfo);
+
+await mgr.loadSector(manifestInfo.manifest.sectors[0], manifestInfo.basePrefix, false);
+await mgr.loadSector(manifestInfo.manifest.sectors[1], manifestInfo.basePrefix, false);
+mgr.loadFallbackSector(() => {});
+
+process.stdout.write(JSON.stringify({
+    basePrefix: manifestInfo.basePrefix,
+    externalBaseUrl: manifestInfo.externalBaseUrl,
+    requestedUrls,
+    uploaded,
+    has00: mgr.sectorCache.has('0_0'),
+    has10: mgr.sectorCache.has('1_0'),
+    hasFallback: mgr.sectorCache.has('fallback_0_0'),
+}));
+"""
+        proc = subprocess.run([node_bin, "--input-type=module", "-e", script], capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 0, f"Node probe failed:\n{proc.stderr}\n{proc.stdout}")
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["basePrefix"], "../")
+        self.assertEqual(data["externalBaseUrl"], "https://cdn.example.test/releases/download/sectors-v1/")
+        self.assertIn("../models/sectors/sector_0_0.glb", data["requestedUrls"])
+        self.assertIn("https://cdn.example.test/releases/download/sectors-v1/sector_1_0.glb", data["requestedUrls"])
+        self.assertNotIn("https://cdn.example.test/releases/download/sectors-v1/models/sectors/sector_0_0.glb", data["requestedUrls"])
+        self.assertNotIn("https://cdn.example.test/releases/download/sectors-v1/models/sectors/sector_1_0.glb", data["requestedUrls"])
+        self.assertTrue(data["has00"])
+        self.assertTrue(data["has10"])
+        self.assertTrue(data["hasFallback"])
+
+
 if __name__ == "__main__":
     unittest.main()

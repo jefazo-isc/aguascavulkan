@@ -38,12 +38,12 @@ export async function resolveSectorManifest() {
             if (!resp.ok) continue;
             const data = await resp.json();
             if (data && Array.isArray(data.sectors) && data.sectors.length > 0) {
-                // Si el manifest (inyectado por CI) incluye external_base_url, usarla
-                // como prefijo para los GLBs externos (GitHub Releases CDN con CORS nativo).
-                // Fallback seguro: si la URL externa no responde, el streaming LRU
-                // simplemente marca el sector como _missingSectors y muestra el mapa base.
-                const prefix = data.external_base_url || cand.prefix;
-                return { manifest: data, basePrefix: prefix, source: cand.url };
+                return {
+                    manifest: data,
+                    basePrefix: cand.prefix,
+                    externalBaseUrl: data.external_base_url || '',
+                    source: cand.url,
+                };
             }
         } catch (_err) {
             // Try next candidate
@@ -80,7 +80,7 @@ export async function resolveSectorManifest() {
 // ---------------------------------------------------------------------------
 // fetchChunksForSector(sectorEntry, basePrefix)
 // ---------------------------------------------------------------------------
-export async function fetchChunksForSector(sectorEntry, basePrefix) {
+export async function fetchChunksForSector(sectorEntry, basePrefix, externalBaseUrl = '') {
     const candidates = [];
     if (sectorEntry.chunksFile) {
         candidates.push(sectorEntry.chunksFile);
@@ -89,6 +89,10 @@ export async function fetchChunksForSector(sectorEntry, basePrefix) {
         const chunkRel = sectorEntry.file.replace(/sector_(-?\d+)_(-?\d+)\.glb$/, 'chunks_$1_$2.json');
         if (chunkRel !== sectorEntry.file) {
             candidates.push(`${basePrefix}${chunkRel}`);
+            if (externalBaseUrl) {
+                const fileName = chunkRel.split('/').pop();
+                candidates.push(`${externalBaseUrl}${fileName}`);
+            }
         }
     }
     if (sectorEntry.mx === 0 && sectorEntry.mz === 0) {
@@ -182,17 +186,30 @@ export class SectorManager {
                 this._loaderTextEl.textContent = `Descargando ${sectorLabel}...`;
             }
 
-            const [arrayBuf, chunks] = await Promise.all([
-                fetchArrayBufferWithProgress(glbUrl, (loaded, total) => {
-                    if (showLoader && this._loaderBarEl && total > 0) {
-                        const pct = Math.round((loaded / total) * 100);
-                        this._loaderBarEl.style.width = `${pct}%`;
-                        if (this._loaderTextEl) {
-                            this._loaderTextEl.textContent = `Descargando sector_${key}.glb: ${(loaded / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB (${pct}%)`;
-                        }
+            const externalBaseUrl = (this.manifestInfo && this.manifestInfo.externalBaseUrl) || '';
+            const onProgress = (loaded, total) => {
+                if (showLoader && this._loaderBarEl && total > 0) {
+                    const pct = Math.round((loaded / total) * 100);
+                    this._loaderBarEl.style.width = `${pct}%`;
+                    if (this._loaderTextEl) {
+                        this._loaderTextEl.textContent = `Descargando sector_${key}.glb: ${(loaded / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB (${pct}%)`;
                     }
-                }),
-                fetchChunksForSector(entry, basePrefix),
+                }
+            };
+
+            const fetchGlbWithFallback = async () => {
+                try {
+                    return await fetchArrayBufferWithProgress(glbUrl, onProgress);
+                } catch (localErr) {
+                    if (!externalBaseUrl) throw localErr;
+                    const extUrl = `${externalBaseUrl}sector_${entry.mx}_${entry.mz}.glb`;
+                    return await fetchArrayBufferWithProgress(extUrl, onProgress);
+                }
+            };
+
+            const [arrayBuf, chunks] = await Promise.all([
+                fetchGlbWithFallback(),
+                fetchChunksForSector(entry, basePrefix, externalBaseUrl),
             ]);
 
             // If camera teleported far away while downloading, discard early
@@ -248,10 +265,11 @@ export class SectorManager {
     // -----------------------------------------------------------------------
     loadFallbackSector(showToast) {
         const fallback = buildStandaloneFallbackSector();
-        this._renderer.uploadSector('0_0', fallback.mesh, fallback.chunks);
+        this._renderer.uploadSector('fallback_0_0', fallback.mesh, fallback.chunks);
         const c = fallback.chunks[0];
-        this.sectorCache.set('0_0', {
+        this.sectorCache.set('fallback_0_0', {
             entry: { mx: 0, mz: 0 },
+            isFallback: true,
             aabbData: new Float32Array([c.min_x, c.min_y, c.min_z, c.max_x, c.max_y, c.max_z]),
             chunkCount: 1,
             cx: 512.0,
