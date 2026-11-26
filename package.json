@@ -4,7 +4,7 @@
   "type": "module",
   "description": "StreetVulkan: Gemelo Digital Urbano 3D de Aguascalientes (WebGL2 & WebAssembly)",
   "scripts": {
-    "build": "python3 tools/compile_wat_to_wasm.py && node --check web/app.js && node --check web/renderer_webgl2.js && node --check web/renderer_webgpu.js && node --check web/traffic_sim.js && node --check web/city_basemap.js",
+    "build": "python3 tools/compile_wat_to_wasm.py && for f in web/*.js tests/e2e/smoke.mjs; do node --check \"$f\" || exit 1; done",
     "test": "python3 -m unittest discover -s tests -v",
     "serve": "python3 -m http.server 8080",
     "start": "python3 -m http.server 8080",

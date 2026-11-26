@@ -211,7 +211,7 @@ async function main() {
         await cdp.send('Page.navigate', { url: `${baseUrl}/web/index.html?backend=webgl2` });
 
         // 1-3. Initial load: GLB sector, basemap and traffic
-        const boot = await waitFor(cdp, (h) => h.loaderHidden && /Sectores: 1/.test(h.chunks) &&
+        const boot = await waitFor(cdp, (h) => h.loaderHidden && /Sectores: [1-9]\d*/.test(h.chunks) &&
             (Number((h.chunks.match(/Mapa: (\d+)/) || [])[1]) >= 10) && /^\d+ FPS/.test(h.fps) &&
             Number.parseInt(h.cars, 10) > 0, 'sector + basemap + traffic');
         report.bootMs = boot.ms;

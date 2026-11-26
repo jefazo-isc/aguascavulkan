@@ -17,6 +17,7 @@ let _elCpuDraw  = null;
 let _elChunks   = null;
 let _elVerts    = null;
 let _elPos      = null;
+let _elCars     = null;
 let _elLoader   = null;
 let _elLoaderText = null;
 let _elLoaderBar  = null;
@@ -39,6 +40,7 @@ export function initHUD(elements) {
     _elChunks     = elements.elChunks;
     _elVerts      = elements.elVerts;
     _elPos        = elements.elPos;
+    _elCars       = elements.elCars || null;
     _elLoader     = elements.elLoader;
     _elLoaderText = elements.elLoaderText;
     _elLoaderBar  = elements.elLoaderBar;
@@ -127,7 +129,7 @@ export function updateCanvasSize(canvas) {
  * @param {number} avgCpuMs
  * @param {string[]} TRAFFIC_PHASE_LABELS
  */
-export function updateTelemetry(stats, state, canvas, sectorCount, currentFps, avgFrameMs, avgCpuMs, TRAFFIC_PHASE_LABELS) {
+export function updateTelemetry(stats, state, canvas, sectorCount, lodCount, activeCarCount, currentFps, avgFrameMs, avgCpuMs, TRAFFIC_PHASE_LABELS) {
     if (_elRes) _elRes.textContent = `${canvas.width}x${canvas.height} px`;
     if (_elTime) {
         const hrs  = Math.floor(state.simHour);
@@ -146,7 +148,7 @@ export function updateTelemetry(stats, state, canvas, sectorCount, currentFps, a
         _elCpuDraw.textContent = `${avgCpuMs.toFixed(2)} ms | Draw: ${stats.drawCalls}`;
     }
     if (_elChunks) {
-        _elChunks.textContent = `${stats.visibleChunks}/${stats.totalChunks} (Sectores: ${sectorCount})`;
+        _elChunks.textContent = `${stats.visibleChunks}/${stats.totalChunks} (Sectores: ${sectorCount} + Mapa: ${lodCount})`;
     }
     if (_elVerts) {
         const cullPct = stats.totalVerts > 0
@@ -157,5 +159,8 @@ export function updateTelemetry(stats, state, canvas, sectorCount, currentFps, a
     if (_elPos) {
         const { camX, camY, camZ, yaw } = state._camPos;
         _elPos.textContent = `${camX.toFixed(1)}, ${camY.toFixed(1)}, ${camZ.toFixed(1)} | Yaw ${yaw.toFixed(1)}°`;
+    }
+    if (_elCars && state.carsEnabled) {
+        _elCars.textContent = `${activeCarCount} activos`;
     }
 }

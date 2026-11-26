@@ -103,12 +103,7 @@ quality:
 
 web-build:
 	python3 tools/compile_wat_to_wasm.py
-	node --check web/app.js
-	node --check web/renderer_webgpu.js
-	node --check web/renderer_webgl2.js
-	node --check web/traffic_sim.js
-	node --check web/city_basemap.js
-	node --check tests/e2e/smoke.mjs
+	for f in web/*.js tests/e2e/smoke.mjs; do node --check "$$f" || exit 1; done
 
 web-test: web-build
 	python3 -m unittest discover -s tests -v

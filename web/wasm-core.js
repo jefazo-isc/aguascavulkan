@@ -37,11 +37,12 @@ export const TIME_PRESETS = [
     { hour: 6.5,  label: '06:30 Amanecer' },
 ];
 
+// Signal group 0 controls roads running along X (East-West), group 1 along Z (tools/sector_roads.py)
 export const TRAFFIC_PHASE_LABELS = [
-    'F0: N-S Verde',
-    'F1: N-S Ámbar',
-    'F2: E-O Verde',
-    'F3: E-O Ámbar',
+    'F0: E-O Verde',
+    'F1: E-O Ámbar',
+    'F2: N-S Verde',
+    'F3: N-S Ámbar',
 ];
 
 // ----------------------------------------------------------------------------
