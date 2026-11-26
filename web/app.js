@@ -998,6 +998,16 @@ async function main() {
         }
     }
 
+    // LRU Streaming Buffer Configuration
+    // Keeps active macro-sectors in GPU memory while strictly bounding RAM to prevent
+    // out-of-memory crashes on Firefox WebGL2 and Chrome WebGPU.
+    // Declared before resetCamera()/loadSectorEntry() run: reading a `const` before its
+    // declaration throws a TDZ ReferenceError that silently forced the fallback scene.
+    const MAX_ACTIVE_SECTORS = 6;
+    const STREAM_LOAD_RADIUS = 2400.0;
+    const STREAM_UNLOAD_RADIUS = 3800.0;
+    const MAX_CONCURRENT_STREAM_LOADS = 2;
+
     // Declared early so resetCamera→maybeStreamNearbySectors can safely read it
     // before resolveSectorManifest() runs (initially null = no streaming yet).
     let manifestInfo = null;
@@ -1468,14 +1478,6 @@ async function main() {
     let avgFrameMs = 16.6;
     let avgCpuMs = 0.5;
     let streamCheckTimer = 0;
-
-    // LRU Streaming Buffer Configuration
-    // Keeps active macro-sectors in GPU memory while strictly bounding RAM to prevent
-    // out-of-memory crashes on Firefox WebGL2 and Chrome WebGPU.
-    const MAX_ACTIVE_SECTORS = 6;
-    const STREAM_LOAD_RADIUS = 2400.0;
-    const STREAM_UNLOAD_RADIUS = 3800.0;
-    const MAX_CONCURRENT_STREAM_LOADS = 2;
 
     function maybeStreamNearbySectors(camX, camZ) {
         if (!manifestInfo || !manifestInfo.manifest || !Array.isArray(manifestInfo.manifest.sectors)) return;
