@@ -10,6 +10,7 @@
 import { WebGPURenderer } from './renderer_webgpu.js';
 import { WebGL2Renderer } from './renderer_webgl2.js';
 import { CAR_TYPES, CAR_INSTANCE_FLOATS, TrafficSimulation, parseRoadGraph, stageCorridorInstances } from './traffic_sim.js';
+import { BASEMAP_MACRO_SIZE, parseCityBasemap, basemapRoadHeight, bucketRoadSegments, buildBasemapCell, basemapCellKeys } from './city_basemap.js';
 
 // Exact initial camera spawn in front of Rolcar Paseo de la Cruz (src/math_camera.c)
 const INITIAL_CAMERA = {
@@ -672,6 +673,20 @@ async function loadVehicleModelWithFallback(basePrefix, typeName = 'sedan') {
     return buildFallbackVehicleMesh();
 }
 
+async function loadCityBasemap(basePrefix) {
+    const candidates = [`${basePrefix}models/city_basemap.bin`, '../models/city_basemap.bin', './models/city_basemap.bin'];
+    for (const url of candidates) {
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) continue;
+            return parseCityBasemap(await resp.arrayBuffer());
+        } catch (err) {
+            console.warn(`[Basemap] ${url}:`, err.message);
+        }
+    }
+    return null;
+}
+
 async function loadRoadGraph(basePrefix) {
     const candidates = [`${basePrefix}models/road_network.bin`, '../models/road_network.bin', './models/road_network.bin'];
     for (const url of candidates) {
@@ -1102,21 +1117,81 @@ async function main() {
         });
     });
 
-    // Road-graph traffic (port of src/car_system.c); cars stay on loaded macro-sectors
+    // City basemap: low-detail terrain + road network for every 1024 m cell without a GLB sector
+    // (renderer keys `lod_<mx>_<mz>`). Cells are built progressively, nearest to the camera first.
+    let cityBasemap = null;
+    let roadBuckets = null;
+    const lodCells = new Map(); // `${mx}_${mz}` -> { aabbData }
+    const lodBuildQueue = [];
+    let lodDirty = true;
+    let lodKeys = [];
+    let lodAabbs = new Float32Array(0);
+    let lodFlags = new Uint8Array(0);
+    const sectorKeyAt = (x, z) => `${Math.floor(x / BASEMAP_MACRO_SIZE)}_${Math.floor(z / BASEMAP_MACRO_SIZE)}`;
+
+    function hideBasemapCell(key) {
+        if (!lodCells.has(key)) return;
+        renderer.unloadSector(`lod_${key}`);
+        cullFlagsBySector.delete(`lod_${key}`);
+        lodCells.delete(key);
+        lodDirty = true;
+    }
+
+    function queueBasemapCell(key) {
+        if (!cityBasemap || lodCells.has(key) || sectorCache.has(key) || lodBuildQueue.includes(key)) return;
+        lodBuildQueue.push(key);
+    }
+
+    function buildQueuedBasemapCells(camX, camZ, budgetMs) {
+        if (!cityBasemap || lodBuildQueue.length === 0) return;
+        lodBuildQueue.sort((a, b) => {
+            const [ax, az] = a.split('_').map(Number);
+            const [bx, bz] = b.split('_').map(Number);
+            return Math.hypot((ax + 0.5) * BASEMAP_MACRO_SIZE - camX, (az + 0.5) * BASEMAP_MACRO_SIZE - camZ) -
+                   Math.hypot((bx + 0.5) * BASEMAP_MACRO_SIZE - camX, (bz + 0.5) * BASEMAP_MACRO_SIZE - camZ);
+        });
+        const t0 = performance.now();
+        while (lodBuildQueue.length > 0 && performance.now() - t0 < budgetMs) {
+            const key = lodBuildQueue.shift();
+            if (sectorCache.has(key) || lodCells.has(key)) continue;
+            const [mx, mz] = key.split('_').map(Number);
+            const cell = buildBasemapCell(cityBasemap, trafficGraph, roadBuckets, mx, mz);
+            if (!cell) continue;
+            renderer.uploadSector(`lod_${key}`, cell.meshData, cell.chunks);
+            const c = cell.chunks[0];
+            lodCells.set(key, { aabbData: [c.min_x, c.min_y, c.min_z, c.max_x, c.max_y, c.max_z] });
+            lodDirty = true;
+        }
+    }
+
+    // Road-graph traffic (port of src/car_system.c); cars drive on GLB sectors and on the basemap
     let trafficSim = null;
+    let trafficGraph = null;
     const fallbackInstances = new Float32Array(state.carCount * CAR_INSTANCE_FLOATS);
     const fallbackTypeCounts = new Uint32Array(CAR_TYPES.length);
     const fallbackTypeOffsets = new Uint32Array(CAR_TYPES.length);
-    loadRoadGraph(assetPrefix).then((graph) => {
+    Promise.all([loadRoadGraph(assetPrefix), loadCityBasemap(assetPrefix)]).then(([graph, basemap]) => {
+        trafficGraph = graph;
+        if (basemap) {
+            cityBasemap = basemap;
+            roadBuckets = graph ? bucketRoadSegments(graph) : null;
+            for (const [mx, mz] of basemapCellKeys(basemap)) queueBasemapCell(`${mx}_${mz}`);
+        } else {
+            console.warn('[Basemap] city_basemap.bin unavailable; only GLB sectors are shown');
+        }
         if (!graph) {
             console.warn('[Traffic] road_network.bin unavailable; using WASM corridor vehicles');
             return;
         }
         trafficSim = new TrafficSimulation(graph, state.carCount);
         trafficSim.isDrivable = (x, z) => {
-            const macroSize = (manifestInfo && manifestInfo.manifest && manifestInfo.manifest.macro_size) || 1024.0;
-            return sectorCache.has(`${Math.floor(x / macroSize)}_${Math.floor(z / macroSize)}`);
+            const key = sectorKeyAt(x, z);
+            return sectorCache.has(key) || lodCells.has(key);
         };
+        // On basemap cells the road is drawn over a coarse 64 m terrain; match its height
+        trafficSim.surfaceHeight = (x, roadY, z) => (sectorCache.has(sectorKeyAt(x, z)) || !cityBasemap)
+            ? roadY + 0.05
+            : basemapRoadHeight(cityBasemap, x, roadY, z);
     });
 
     function unloadSectorEntry(key) {
@@ -1125,6 +1200,7 @@ async function main() {
         renderer.unloadSector(key);
         sectorCache.delete(key);
         cullFlagsBySector.delete(key);
+        queueBasemapCell(key);
     }
 
     async function loadSectorEntry(entry, basePrefix, showLoader) {
@@ -1190,6 +1266,7 @@ async function main() {
 
             const cx = (entry.mx + 0.5) * macroSize;
             const cz = (entry.mz + 0.5) * macroSize;
+            hideBasemapCell(key);
             sectorCache.set(key, {
                 entry,
                 aabbData,
@@ -1706,6 +1783,28 @@ async function main() {
             }
         }
 
+        // WASM frustum culling for the basemap cells (one AABB per cell, batched)
+        if (lodDirty) {
+            lodKeys = Array.from(lodCells.keys());
+            lodAabbs = new Float32Array(lodKeys.length * 6);
+            lodFlags = new Uint8Array(lodKeys.length);
+            lodKeys.forEach((key, i) => {
+                lodAabbs.set(lodCells.get(key).aabbData, i * 6);
+                cullFlagsBySector.set(`lod_${key}`, lodFlags.subarray(i, i + 1));
+            });
+            lodDirty = false;
+        }
+        if (state.cullingEnabled) {
+            for (let offset = 0; offset < lodKeys.length; offset += MAX_CULL_BATCH) {
+                const batch = Math.min(MAX_CULL_BATCH, lodKeys.length - offset);
+                f32Mem.set(lodAabbs.subarray(offset * 6, (offset + batch) * 6), aabbBaseFloat);
+                wasm.cull_chunks(MEM_PLANES_PTR, MEM_AABBS_PTR, MEM_FLAGS_PTR, batch);
+                lodFlags.set(u8Mem.subarray(MEM_FLAGS_PTR, MEM_FLAGS_PTR + batch), offset);
+            }
+        } else {
+            lodFlags.fill(1);
+        }
+
         // Execute WASM deterministic traffic simulation tick
         if (!state.paused) {
             state.trafficPhase = wasm.traffic_tick(MEM_SIM_TIME_PTR, dt);
@@ -1800,6 +1899,9 @@ async function main() {
             vehicles: state.carsEnabled ? vehicleFrame() : null,
         });
 
+        // Progressive basemap construction (~6 ms per frame)
+        buildQueuedBasemapCells(camX, camZ, 6.0);
+
         // Background nearby sector streaming check every 0.5s
         streamCheckTimer += dt;
         if (streamCheckTimer >= 0.5) {
@@ -1837,7 +1939,7 @@ async function main() {
                 elCpuDraw.textContent = `${avgCpuMs.toFixed(2)} ms | Draw: ${stats.drawCalls}`;
             }
             if (elChunks) {
-                elChunks.textContent = `${stats.visibleChunks}/${stats.totalChunks} (Sectores: ${sectorCache.size})`;
+                elChunks.textContent = `${stats.visibleChunks}/${stats.totalChunks} (Sectores: ${sectorCache.size} + Mapa: ${lodCells.size})`;
             }
             if (elVerts) {
                 const cullPct = stats.totalVerts > 0

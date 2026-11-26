@@ -44,7 +44,8 @@ jobs:
             models/traffic_signals.json \
             models/rolcar_aguascalientes.json \
             models/utility_poles_rolcar.json \
-            models/road_network.bin; do
+            models/road_network.bin \
+            models/city_basemap.bin; do
             if [ -f "$f" ]; then cp "$f" _site/models/; fi
           done
           if [ -d models/cars ]; then
