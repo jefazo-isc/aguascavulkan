@@ -68,6 +68,7 @@ export function parseRoadGraph(arrayBuffer) {
     const edgePtOff = new Uint32Array(nEdges);
     const edgePtCount = new Uint32Array(nEdges);
     const edgeSpeed = new Float32Array(nEdges);
+    const edgeWidth = new Float32Array(nEdges);
     const edgeLanesFwd = new Uint8Array(nEdges);
     const edgeLanesRev = new Uint8Array(nEdges);
     const edgeOneway = new Uint8Array(nEdges);
@@ -77,6 +78,7 @@ export function parseRoadGraph(arrayBuffer) {
         edgePtOff[i] = dv.getUint32(off + 8, true);
         edgePtCount[i] = dv.getUint32(off + 12, true);
         edgeSpeed[i] = dv.getFloat32(off + 16, true);
+        edgeWidth[i] = dv.getFloat32(off + 20, true);
         edgeLanesFwd[i] = dv.getUint8(off + 24);
         edgeLanesRev[i] = dv.getUint8(off + 25);
         edgeOneway[i] = dv.getUint8(off + 26);
@@ -150,7 +152,7 @@ export function parseRoadGraph(arrayBuffer) {
     return {
         nNodes, nEdges, nPoints,
         nodeX, nodeZ, nodeSignal,
-        edgeA, edgeB, edgePtOff, edgePtCount, edgeSpeed,
+        edgeA, edgeB, edgePtOff, edgePtCount, edgeSpeed, edgeWidth,
         edgeLanesFwd, edgeLanesRev, edgeOneway,
         edgeValid, edgeLen, edgeMidX, edgeMidZ,
         points, nodeEdgeOffsets, nodeEdgeIdx, nodeEdgeDir, edgeGrid,
@@ -180,6 +182,8 @@ export class TrafficSimulation {
         this.despawnRadius = 650.0;
         // Optional predicate (x, z) => boolean restricting cars to loaded terrain
         this.isDrivable = null;
+        // Optional (x, roadY, z) => y for the rendered road surface (e.g. the city basemap)
+        this.surfaceHeight = null;
         this._sample = { x: 0, y: 0, z: 0, fx: 0, fz: 1 };
         for (let i = 0; i < maxCars; i++) {
             this.cars.push({
@@ -332,8 +336,8 @@ export class TrafficSimulation {
         const s = this._polylineSample(car.edge, car.t, car.dir, this._sample);
         const off = this._laneOffset(car);
         car.x = s.x - s.fz * off;
-        car.y = s.y + ROAD_Y_OFFSET;
         car.z = s.z + s.fx * off;
+        car.y = this.surfaceHeight ? this.surfaceHeight(car.x, s.y, car.z) : s.y + ROAD_Y_OFFSET;
         car.heading = Math.atan2(s.fx, s.fz);
     }
 
