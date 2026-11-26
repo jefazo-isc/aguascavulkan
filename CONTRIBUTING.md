@@ -12,7 +12,7 @@ El proyecto se organiza con **Scrum** sobre GitHub:
 | Rol | Responsabilidad |
 | :--- | :--- |
 | Product Owner | Prioriza el backlog y acepta las historias en la Sprint Review. |
-| Scrum Master | Facilita las ceremonias, cuida el flujo de trabajo y registra las minutas en `docs/sprints/`. |
+| Scrum Master (rota por sprint) | Facilita las ceremonias, cuida el flujo de trabajo y registra las minutas en `docs/sprints/`. |
 | Equipo de desarrollo | Cada integrante es dueño de un **tema** (Renderizado, Geodatos, Tráfico, UX, DevOps) y lo documenta y expone. |
 
 ## Flujo de trabajo para cada issue
