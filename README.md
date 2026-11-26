@@ -230,6 +230,8 @@ aguascavulkan/
 
 ## 📚 Documentación de Metodologías y Normas ISO (Para Evaluaciones Académicas)
 
+> 🗂️ **Gestión Scrum:** [tablero del proyecto](https://github.com/users/MiguelAngelBatres/projects/7), [sprints (milestones)](https://github.com/jefazo-isc/aguascavulkan/milestones), flujo de trabajo en [CONTRIBUTING.md](CONTRIBUTING.md) y documentación del proceso según [ISO/IEC 29110](docs/ISO_IEC_29110.md).
+
 Para sustentar la metodología de ingeniería de software y estándares de calidad ante profesores o evaluadores, el proyecto incluye una suite documental completa en el directorio `docs/`:
 
 La guía operativa recomendada para organizar cambios futuros es **[docs/GUIA_METODOLOGIA_PRACTICA.md](docs/GUIA_METODOLOGIA_PRACTICA.md)**. Distingue la práctica de trabajo propuesta de los informes históricos y explica cómo interpretar las pruebas, métricas y limitaciones.
